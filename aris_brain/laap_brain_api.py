@@ -105,11 +105,20 @@ def process_with_laap(messages: list, model: str = "laap-core") -> dict:
     """
     integrator = get_laap_engine()
 
-    # Get the last user message
+    # Get the last user message (support OpenAI content parts list)
     user_msg = ""
     for m in reversed(messages):
         if m.get("role") == "user":
-            user_msg = m.get("content", "")
+            raw = m.get("content", "")
+            if isinstance(raw, list):
+                # Extract text parts, add marker if image_url present
+                parts = [p.get("text", "") for p in raw
+                         if isinstance(p, dict) and p.get("type") == "text"]
+                if any(isinstance(p, dict) and p.get("type") == "image_url" for p in raw):
+                    parts.append("[圖片]")
+                user_msg = " ".join(parts)
+            else:
+                user_msg = raw if isinstance(raw, str) else str(raw)
             break
 
     if not user_msg:
