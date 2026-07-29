@@ -187,9 +187,26 @@ class PsiBridge:
         self.state.energy = max(2.0, self.state.energy - 0.02)
 
     def _drift_needs(self):
-        """需求向平衡值漂移"""
+        """需求向平衡值漂移 — LNN τ 頻譜
+        
+        每個 need 有自己的時間常數 τ，控制漂移速度：
+          competence: τ=20（慢 — 長期記憶，一次失敗不該大幅動搖自信）
+          autonomy:   τ=15（中慢 — 自主感需要多次互動才改變）
+          relatedness: τ=10（中 — 連結感隨每次互動調整）
+          certainty:  τ=5  （快 — 不確定性需要快速更新）
+          growth:     τ=8  （中快 — 成長感每次互動都有資訊）
+        
+        CfC 閉式解對應：current + (target - current) * (1 - exp(-dt/τ))
+        此處 dt=1（每個 cognitive cycle），簡化為線性近似：
+          current += (target - current) * dt/τ
+        """
+        tau = {
+            "competence": 20, "autonomy": 15, "relatedness": 10,
+            "certainty": 5, "growth": 8,
+        }
         for name in NEED_NAMES:
-            self.state.needs[name] += (0.5 - self.state.needs[name]) * 0.05
+            t = tau.get(name, 10)
+            self.state.needs[name] += (0.5 - self.state.needs[name]) / t
             self.state.needs[name] = round(self.state.needs[name], 4)
 
     def _update_needs_from_input(self, text: str, hints: Optional[Dict] = None):
