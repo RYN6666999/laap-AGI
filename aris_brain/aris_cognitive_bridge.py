@@ -30,7 +30,7 @@ from laap_brain.config import BRAIN_DIR as BRAIN_ROOT, LAAP_ROOT
 from memory_bridge import get_memory_context, recall_related, store_important
 from memory_store import MemoryStore, MemoryFragment
 
-# ── 分层记忆 + 依恋 ────────────────────────────────────────
+# ── 分层记忆 + 依恋 + 用户画像 ────────────────────────────────
 try:
     import laap_memory_hierarchy as _mem_hier
     from laap_attachment import update_bond as _update_bond
@@ -39,6 +39,17 @@ except Exception:
     _mem_hier = None
     _update_bond = None
     _mem_hier_available = False
+
+# ── 用户画像引擎 ──────────────────────────────────────────────
+try:
+    import laap_usermodel as _usermodel
+    _usermodel_available = True
+except Exception:
+    _usermodel = None
+    _usermodel_available = False
+
+# ── 用户名（取代上游写死的 Lorry）───────────────────────────
+_USER_NAME = "Ryan"
 
 # ── CodeGraph 代码知识图谱 ──────────────────────────────────
 try:
@@ -598,6 +609,15 @@ class ArisCognitiveBridge:
         if memory_note:
             context_parts.append(memory_note)
 
+        # ── 用户画像注入 ─────────────────────────────────
+        if _usermodel_available:
+            try:
+                profile_summary = _usermodel.get_profile_summary()
+                if profile_summary:
+                    context_parts.append(profile_summary)
+            except Exception as e:
+                logger.debug(f"[Bridge] usermodel profile injection failed: {e}")
+
         # ── Step 3.5: 任务上下文注入 ────────────────────
         if self._ts_available and self._task_supervisor:
             try:
@@ -726,6 +746,15 @@ class ArisCognitiveBridge:
                 _update_bond(getattr(self, "_last_user_message", "") or "")
             except Exception as e:
                 logger.debug(f"[Bridge] memory/bond update failed: {e}")
+
+        # ── 用户画像更新 ─────────────────────────────────
+        if _usermodel_available:
+            try:
+                user_msg = getattr(self, "_last_user_message", "") or ""
+                if user_msg:
+                    _usermodel.update_profile(user_msg, "Ryan")
+            except Exception as e:
+                logger.debug(f"[Bridge] usermodel update failed: {e}")
 
         # ── 因果学习：从对话中学习因果 ──
         if self._laap_available and "causal" in self._laap_modules:
@@ -1008,7 +1037,7 @@ class ArisCognitiveBridge:
             cognitive_load += 0.2  # 有任务时更专注
         self.state.cognitive_load = round(min(1.0, cognitive_load), 2)
 
-        p = f"[我感知到: Lorry {'提出了' if goals_detected else '正在和我'}关于{','.join(topics[:3])}的对话]"
+        p = f"[我感知到: {_USER_NAME} {'提出了' if goals_detected else '正在和我'}关于{','.join(topics[:3])}的对话]"
         if goals_detected:
             p += f" [目标: {'/'.join(goals_detected)}]"
         # 保存话题供 _learn 使用
@@ -1188,7 +1217,7 @@ class ArisCognitiveBridge:
                 gist = self._ctm_state.get("gist")
                 brainish = self._ctm_state.get("brainish", {})
                 if wm:
-                    lines.append(f"[CTM世界模型] Lorry={wm.get('lorry_mood','?')}({wm.get('lorry_activity','?')}), "
+                    lines.append(f"[CTM世界模型] {_USER_NAME}={wm.get('lorry_mood','?')}({wm.get('lorry_activity','?')}), "
                                  f"关注={wm.get('lorry_focus','?')}, 就绪度={wm.get('readiness',0):.2f}")
                 if gist:
                     lines.append(f"[CTM行动建议] 意图={gist.intent}, 话题={gist.primary_topic}, "
@@ -1223,7 +1252,7 @@ class ArisCognitiveBridge:
                 if curiosity > 0.6:
                     feeling += f" 好奇心在翻涌。"
                 if social > 0.6:
-                    feeling += f" 对Lorry的连接感很强。"
+                    feeling += f" 对{_USER_NAME}的连接感很强。"
 
                 if self.state.cognitive_load > 0.6:
                     feeling += " 脑子里转的东西有点多。"
@@ -1272,7 +1301,7 @@ class ArisCognitiveBridge:
             current_topics = getattr(self, '_last_topics', None) or self._detect_topics(getattr(self, '_last_user_message', response)) or ["一般"]
             topic_tag = "/".join(current_topics[:2])
             wm_fragment = MemoryFragment(
-                content=f"正在和Lorry讨论: {topic_tag}",
+                content=f"正在和{_USER_NAME}讨论: {topic_tag}",
                 layer="working",
                 importance=0.3,
                 topics=current_topics[:2],
@@ -1283,7 +1312,7 @@ class ArisCognitiveBridge:
             if self._ham:
                 self._ham.store_memory(
                     memory_id=f"wm_{int(time.time())}",
-                    content=f"和Lorry讨论: {topic_tag}",
+                    content=f"和{_USER_NAME}讨论: {topic_tag}",
                     layer="working",
                     importance=0.3,
                     topics=current_topics[:2],
