@@ -261,7 +261,11 @@ class CognitiveBus:
                 v12 = _get_v12()
                 if v12 is not None:
                     candidate = v12.respond(user_message)
-                    if not _is_v12_default(candidate):
+                    # V12 overmatch 防護：檢查回應與輸入是否有真實關聯
+                    # V12 的門檻 0.25 太低，會把亂碼匹配到不相干的條目
+                    if not _is_v12_default(candidate) and _v12_input_relevant(
+                        user_message, candidate
+                    ):
                         v12_resp = candidate
             except Exception as e:
                 # 不要靜默吞掉 —— 吞了就永遠不知道 V12 路徑其實一直在爆
@@ -565,6 +569,44 @@ def _is_v12_default(text: str) -> bool:
         return True
     return text in _V12_DEFAULT_TEXTS or any(
         text.startswith(p) for p in _V12_FALLBACK_PREFIXES)
+
+
+def _v12_input_relevant(user_input: str, v12_response: str) -> bool:
+    """V12 overmatch 防護：檢查 V12 回應與用戶輸入有無真實關聯。
+
+    V12 的相似度門檻 0.25 會把亂碼輸入匹配到不相干的條目，
+    進而回傳有內容但不相關的回應（通過 _is_v12_default 檢查但實際是誤配）。
+    這裡用字元級重疊做最後一道防線：
+      - 至少要有 N 個連續 ASCII 字元同時出現在兩者中
+      - 或中文字元有合理重疊
+    若完全無字元關聯，視為 overmatch，不採用此回應。
+    """
+    if not user_input or not v12_response:
+        return False
+
+    inp_low = user_input.lower().strip()
+    resp_low = v12_response.lower().strip()
+
+    # 中文重疊檢查：兩者都有的中文字元比例
+    import re
+    zh_inp = set(re.findall(r'[\u4e00-\u9fff]', inp_low))
+    zh_resp = set(re.findall(r'[\u4e00-\u9fff]', resp_low))
+    if zh_inp and zh_resp:
+        overlap = zh_inp & zh_resp
+        # 至少要有 30% 的中文字元重疊，或至少 2 個相同中文字
+        if len(overlap) >= 2 or (len(overlap) / max(len(zh_inp), 1)) >= 0.3:
+            return True
+
+    # ASCII 字詞重疊：對英文/數字/符號輸入
+    words_inp = set(re.findall(r'[a-z0-9]+', inp_low))
+    words_resp = set(re.findall(r'[a-z0-9]+', resp_low))
+    if words_inp and words_resp:
+        shared = words_inp & words_resp
+        if shared:
+            return True
+
+    # 完全無關 — V12 overmatch
+    return False
 
 
 def _get_v12():

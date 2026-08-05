@@ -13,8 +13,10 @@ Run in SSE mode:
 Tools:
     laap_cognitive_state  - get PSI cognitive state for a user input
     laap_recall_memory    - recall relevant memories from LAAP
+    laap_store_memory     - store a memory page into gbrain
     laap_bootstrap        - awaken a new LAAP instance
     laap_reflect          - reflect on a completed turn
+    laap_express          - get TTS + Live2D expression parameters
 """
 
 import argparse
@@ -31,6 +33,21 @@ sys.path.insert(0, str(ARIS_BRAIN / "psi_jspace_bridge"))
 
 import requests
 from mcp.server.fastmcp import FastMCP
+
+# gbrain_client for memory writes (imported from neuralis via PYTHONPATH)
+_GBRAIN_CLIENT = None
+
+
+def _get_gbrain_client():
+    """Lazy import gbrain_client — only loaded when laap_store_memory is called."""
+    global _GBRAIN_CLIENT
+    if _GBRAIN_CLIENT is None:
+        try:
+            from gbrain_client import get_client as _get_client
+            _GBRAIN_CLIENT = _get_client()
+        except Exception as e:
+            return {"error": f"gbrain_client import failed: {e}"}
+    return _GBRAIN_CLIENT
 
 LAAP_API_BASE = os.environ.get("LAAP_API_BASE", "http://localhost:11546")
 
@@ -136,6 +153,51 @@ def laap_express(input: str) -> str:
     """
     result = _laap_post("/v1/express", {"input": input})
     return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def laap_store_memory(content: str, slug: str = "", tags: str = "") -> str:
+    """
+    Store a memory page into gbrain (LAAP long-term memory).
+
+    Content is written as a gbrain page that can be recalled later via
+    laap_recall_memory. Use this to persist important notes, decisions,
+    observations, or summaries.
+
+    Args:
+        content: Full markdown content of the memory page to store.
+        slug: Optional URL-friendly identifier. Auto-generated from content
+              if omitted (first 48 chars, lowercased, hyphenated).
+        tags: Optional comma-separated tags for categorization.
+    """
+    import hashlib, re
+
+    client = _get_gbrain_client()
+    if isinstance(client, dict) and "error" in client:
+        return json.dumps(client, ensure_ascii=False, indent=2)
+    if client is None:
+        return json.dumps(
+            {"error": "gbrain client unavailable (binary not found or spawn failed)"},
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    if not slug:
+        safe = re.sub(r"[^a-zA-Z0-9\u4e00-\u9fff_-]", "-", content[:48].strip().lower())
+        slug = safe.strip("-") or hashlib.md5(content.encode()).hexdigest()[:12]
+
+    # Optionally prepend tags as frontmatter
+    if tags:
+        tag_lines = "\n".join(f"  - {t.strip()}" for t in tags.split(",") if t.strip())
+        page_content = f"---\ntags:\n{tag_lines}\n---\n\n{content}"
+    else:
+        page_content = content
+
+    try:
+        result = client.call("put_page", {"slug": slug, "content": page_content}, timeout=30.0)
+        return json.dumps(result, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e), "source": "laap_store_memory"}, ensure_ascii=False, indent=2)
 
 
 def _get_dominant_need(state: dict) -> str:

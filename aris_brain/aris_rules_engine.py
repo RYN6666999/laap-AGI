@@ -70,6 +70,10 @@ class Rule:
         matched = [p for p in self.patterns if p.lower() in text_lower]
         if not matched:
             return 0.0
+        # 🛡 所有匹配的 pattern 都小於 2 字元 → 誤爆防禦
+        # 單字元（「看」「搜」等）極高頻，會把對話誤當工具指令
+        if all(len(p) < 2 for p in matched):
+            return 0.0
         # 确保任何匹配至少有一个基础分
         base = 0.08
         long_matches = [p for p in matched if len(p) >= 2]
@@ -542,7 +546,7 @@ print(r["output"][:2000])
             ),
             Rule(
                 name="search_code",
-                patterns=["搜索", "搜", "查找", "找一找", "在哪里", "search", "find", "grep", "关键"],
+                patterns=["搜索", "查找", "找一找", "在哪里", "search", "find", "grep", "关键"],
                 intent="search_files",
                 description="搜索代码或文件",
                 steps=[
@@ -552,7 +556,7 @@ print(r["output"][:2000])
             ),
             Rule(
                 name="read_code",
-                patterns=["读取", "打开文件", "查看文件", "读文件", "看", "显示", "read", "open", "cat", "打印"],
+                patterns=["读取", "打开文件", "查看文件", "读文件", "显示", "read", "open", "cat"],
                 intent="read_file",
                 description="读取文件内容",
                 steps=[

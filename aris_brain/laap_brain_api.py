@@ -606,7 +606,7 @@ def main():
     except Exception as e:
         logging.warning(f"Engine pre-warm skipped: {e}")
 
-    app = web.Application()
+    app = web.Application(client_max_size=10*1024*1024)
     app.router.add_get("/", handle_root)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/v1/models", handle_models)
