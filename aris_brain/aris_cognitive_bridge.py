@@ -30,6 +30,16 @@ from laap_brain.config import BRAIN_DIR as BRAIN_ROOT, LAAP_ROOT
 from memory_bridge import get_memory_context, recall_related, store_important
 from memory_store import MemoryStore, MemoryFragment
 
+# ── 分层记忆 + 依恋 ────────────────────────────────────────
+try:
+    import laap_memory_hierarchy as _mem_hier
+    from laap_attachment import update_bond as _update_bond
+    _mem_hier_available = True
+except Exception:
+    _mem_hier = None
+    _update_bond = None
+    _mem_hier_available = False
+
 # ── CodeGraph 代码知识图谱 ──────────────────────────────────
 try:
     from laap_codegraph import get_codegraph as _get_cg, LAAPCodeGraph
@@ -220,6 +230,10 @@ class ArisCognitiveBridge:
         self._laap_agent = None
         self._laap_available = False
         self._init_laap()
+
+        # CognitiveBus 认知总线
+        self._cb_available = _cb_available
+        self._cb_route = _cb_route if _cb_available else None
 
         # CodeGraph 代码知识图谱
         self._codegraph = None
@@ -509,6 +523,26 @@ class ArisCognitiveBridge:
     # PSI 循环
     # ════════════════════════════════════════════════════════
 
+    def _record_and_summarize_memory(self, user_message: str) -> str:
+        """写入三层记忆，返回一句可注入的统计文本。失败不影响主流程。
+
+        _last_user_message 在这里也设一次：原本只在 _perceive 里设，
+        而 _perceive 只在 FULL 模式跑，LIGHT 模式下 after_turn 会拿到上一轮的旧消息。
+        """
+        self._last_user_message = user_message
+        if not _mem_hier_available:
+            return ""
+        try:
+            # 用 add_to_memory 的返回值，不再 load_memory() 二次读盘：
+            # 同一份数据，少一次 I/O，也避免两次读之间不一致。
+            mem = _mem_hier.add_to_memory(user_message, "")
+            total = (mem.get("stats") or {}).get("total_messages", 0)
+            facts = len((mem.get("long_term") or {}).get("facts") or [])
+            return f"[记忆] {total} 次对话历历在目，{facts} 件关于你的事我记着。"
+        except Exception as e:
+            logger.debug(f"[Bridge] memory hierarchy write failed: {e}")
+            return ""
+
     def before_turn(self, user_message: str) -> Dict[str, Any]:
         """
         PSI Step 1-3: Perceive → Select → Integrate
@@ -526,6 +560,11 @@ class ArisCognitiveBridge:
 
         # ── AGI Tick (每5分钟) ─────────────────────────
         self._run_agi_tick()
+
+        # ── 分层记忆：写入 + 取统计 ──────────────────────
+        # 必须在 LIGHT 分支之前：_light_turn 是另一个 return 出口，
+        # 放在分支之后 LIGHT 模式的对话会完全不进记忆。
+        memory_note = self._record_and_summarize_memory(user_message)
 
         # ── LIGHT 模式：压缩认知上下文，跳过 PSI 情感阶段 ──
         if load_level == "light":
@@ -554,6 +593,10 @@ class ArisCognitiveBridge:
         integration = self._integrate()
         integrated = integration + "\n" + self._load_memory_context()
         context_parts.append(integrated)
+
+        # ── 分层记忆统计注入 ────────────────────────────
+        if memory_note:
+            context_parts.append(memory_note)
 
         # ── Step 3.5: 任务上下文注入 ────────────────────
         if self._ts_available and self._task_supervisor:
@@ -675,6 +718,14 @@ class ArisCognitiveBridge:
           - 元学习引擎（更新学习记录）
         """
         self._learn(response)
+
+        # ── 分层记忆：写入 Aris 的回应 + 更新依恋 ──────
+        if _mem_hier_available:
+            try:
+                _mem_hier.add_to_memory("", response)
+                _update_bond(getattr(self, "_last_user_message", "") or "")
+            except Exception as e:
+                logger.debug(f"[Bridge] memory/bond update failed: {e}")
 
         # ── 因果学习：从对话中学习因果 ──
         if self._laap_available and "causal" in self._laap_modules:
