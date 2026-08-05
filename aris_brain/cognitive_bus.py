@@ -64,7 +64,8 @@ class CognitiveBus:
         # 缓存上次读取的时间戳，用于检测新输出
         self._last_psi_cycle: int = 0
         self._last_engine: str = "none"
-        self._stats = {"route_count": 0, "qre_hits": 0, "v12_hits": 0, "qlg_hits": 0}
+        self._stats = {"route_count": 0, "qre_hits": 0, "v12_hits": 0,
+                       "v12_local_hits": 0, "qlg_hits": 0}
 
     # ════════════════════════════════════════════════════════
     # 1. 输入管道：写入用户消息到 psi_core
@@ -254,7 +255,41 @@ class CognitiveBus:
             )
 
         else:
-            # 未知引擎或无输出
+            # 未知引擎或无输出 — 先试 V12 核心（0-LLM 引擎）
+            v12_resp = ""
+            try:
+                v12 = _get_v12()
+                if v12 is not None:
+                    candidate = v12.respond(user_message)
+                    if not _is_v12_default(candidate):
+                        v12_resp = candidate
+            except Exception as e:
+                # 不要靜默吞掉 —— 吞了就永遠不知道 V12 路徑其實一直在爆
+                logger.debug(f"V12 本地回應失敗: {e}")
+
+            if v12_resp:
+                self._stats["v12_hits"] += 1
+                # 與 psi_core 送來的 v12_quantum_kernel 分開記，否則兩條路徑
+                # 共用一個計數器，看不出本地 fallback 到底有沒有在用
+                self._stats["v12_local_hits"] += 1
+                ctx = (
+                    f"[Aris V12 核匹配成功]\n"
+                    f"匹配結果:\n{v12_resp}\n"
+                    f"\n"
+                    f"【指令】以上是 Aris V12 量子核在密集語義空間中檢索到的最優回應。\n"
+                    f"將其翻譯成自然語言，保持所有含義不變。"
+                )
+                return self._make_decision(
+                    decision="v12_kernel",
+                    source="v12_kernel",
+                    response=v12_resp,
+                    confidence=0.7,
+                    latency_us=elapsed_us,
+                    psi_state=state,
+                    cognitive_context=ctx,
+                )
+
+            # 真的无输出
             ctx = self._format_psi_context(state)
             return self._make_decision(
                 decision="no_engine",
@@ -456,11 +491,98 @@ class CognitiveBus:
         )
 
 
-# ════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════
 # 便捷接口（供 aris_cognitive_bridge.py 调用）
-# ════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════
 
 _bus_instance: Optional[CognitiveBus] = None
+
+# 惰性載入 V12 引擎（0-LLM 回應引擎）
+_V12_ENGINE: Optional[Any] = None
+_V12_LOAD_FAILED = False          # 載入失敗只記一次，不要每輪重試 import
+
+# 保底前綴集：只在「無法從核心推導」時使用。
+# 這是抄本，會過期 —— 真正的判準是下面從核心推導出來的 _V12_DEFAULT_TEXTS。
+_V12_FALLBACK_PREFIXES = {
+    '嗯嗯', 'Hmm', 'うん', '응', '嗯？',
+}
+_V12_DEFAULT_TEXTS: frozenset = frozenset()   # 啟動時從 V12 核心原始碼推導
+
+
+def _looks_like_lang_code(key: str) -> bool:
+    """'zh' / 'en' / 'ja' / 'ko' / 'unknown' 這種語言碼 key。"""
+    return key == 'unknown' or (2 <= len(key) <= 3 and key.isascii()
+                                and key.islower() and key.isalpha())
+
+
+def _derive_v12_defaults(engine) -> frozenset:
+    """從 V12 核心的 respond() 原始碼推導「敷衍預設回應」集合。
+
+    為什麼不寫死：核心的 defaults dict（語言 fallback）是上游的東西，
+    上游新增一種語言，寫死的前綴集就會靜默漏掉 —— 那句敷衍回應會被
+    當成真回應，以 confidence 0.7 送進對話。抄一次 = 預約一個謊。
+
+    解析失敗不致命：回空集合，判斷會退回 _V12_FALLBACK_PREFIXES。
+    """
+    import ast, inspect, textwrap
+    found = set()
+    try:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(engine.respond)))
+        for node in ast.walk(tree):
+            # 語言 fallback dict：{'zh': '...', 'en': '...', 'unknown': '...'}
+            # 只收 key 長得像語言碼的，否則上游若在 respond() 裡放真回應表，
+            # 會被整批誤判為敷衍回應，V12 就永遠不開火。
+            if isinstance(node, ast.Dict):
+                for k, v in zip(node.keys, node.values):
+                    if (isinstance(k, ast.Constant) and isinstance(k.value, str)
+                            and isinstance(v, ast.Constant) and isinstance(v.value, str)
+                            and _looks_like_lang_code(k.value)):
+                        found.add(v.value)
+            # 早退的字面值回應：return '嗯？我在听你说～'
+            elif (isinstance(node, ast.Return) and isinstance(node.value, ast.Constant)
+                    and isinstance(node.value.value, str)):
+                found.add(node.value.value)
+    except Exception as e:
+        logger.warning(f"V12 預設回應推導失敗，退回硬編前綴（可能漏擋敷衍回應）: {e}")
+        return frozenset()
+
+    # 漂移警報：推導到的預設回應若不在保底前綴涵蓋範圍內，代表上游改過了。
+    # 這種失效本來是無聲的 —— 在這裡叫出來。
+    drifted = [t for t in found
+               if not any(t.startswith(p) for p in _V12_FALLBACK_PREFIXES)]
+    if drifted:
+        logger.warning(
+            f"V12 預設回應已漂移，硬編前綴涵蓋不到 {len(drifted)} 條："
+            f"{[t[:20] for t in drifted]} —— 已由推導集合接手，"
+            f"但 _V12_FALLBACK_PREFIXES 該更新了"
+        )
+    return frozenset(found)
+
+
+def _is_v12_default(text: str) -> bool:
+    """這句是不是 V12 的敷衍預設回應（= 不該當成真答案送出）。"""
+    if not text:
+        return True
+    return text in _V12_DEFAULT_TEXTS or any(
+        text.startswith(p) for p in _V12_FALLBACK_PREFIXES)
+
+
+def _get_v12():
+    """惰性載入 V12 引擎。載入失敗只試一次，不要每輪對話重試 import。"""
+    global _V12_ENGINE, _V12_LOAD_FAILED, _V12_DEFAULT_TEXTS
+    if _V12_ENGINE is None and not _V12_LOAD_FAILED:
+        try:
+            from aris_v12_dense_kernel import ArisLMv12
+            _V12_ENGINE = ArisLMv12()
+            _V12_DEFAULT_TEXTS = _derive_v12_defaults(_V12_ENGINE)
+            logger.info(
+                f"ArisLMv12 引擎已載入（0-LLM 回應路徑），"
+                f"推導出 {len(_V12_DEFAULT_TEXTS)} 條預設回應"
+            )
+        except Exception as e:
+            _V12_LOAD_FAILED = True
+            logger.warning(f"ArisLMv12 載入失敗，本進程不再重試: {e}")
+    return _V12_ENGINE
 
 
 def get_bus() -> CognitiveBus:
