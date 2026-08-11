@@ -63,7 +63,8 @@ class MemoryStore:
                     "timestamp": f.timestamp,
                     "fragment_id": f.fragment_id,
                 })
-            self._db_path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+            from atomic_json import write_json
+            write_json(self._db_path, records)
         except Exception:
             pass
 
@@ -124,3 +125,59 @@ class MemoryStore:
             return emb
         except Exception:
             return None
+
+
+# ═══ 2026-08-12 移植自 neuralis overlay（live runpy 解析會載到本檔）═══
+
+def _query_tokens(query: str, limit: int = 8) -> str:
+    """自然問句 → gbrain 可用的關鍵字查詢（空白/標點切詞 + CJK 長詞頭尾 2 字）。"""
+    import re as _re
+    toks = [
+        t for t in _re.split(r"[\s\u3000，。！？、；：,.!?;:（）()/\\_'\"\-]+", query.lower())
+        if len(t) >= 2
+    ]
+    out = []
+    for t in toks:
+        out.append(t)
+        if len(t) > 4 and _re.search(r"[\u4e00-\u9fff]", t):
+            out.append(t[:2])
+            out.append(t[-2:])
+    return " ".join(out[:limit])
+
+
+_STOPWORDS = {
+    "告訴我", "告訴", "我們", "哪些", "什麼", "那個", "這個", "一個", "一下",
+    "最近", "有沒有", "可以", "怎麼", "為什麼", "程式裡", "叫什麼", "對話",
+    "全新", "無前文", "前文", "請", "幫我", "說說", "想知道", "做", "弄",
+    "事", "存在", "沒有", "不是", "就是",
+}
+
+
+def _memory_first(hits: list) -> list:
+    mem = [h for h in hits if (h.get("slug") or "").startswith("laap/memory")]
+    rest = [h for h in hits if not (h.get("slug") or "").startswith("laap/memory")]
+    return (mem + rest)[: max(len(hits), 10)]
+
+
+def hybrid_hits_any(client, query: str, limit: int) -> list:
+    """整串查 + 逐 token 查併集；停用詞過濾；laap/memory 優先（2026-08-12）。"""
+    from gbrain_client import hybrid_hits
+    toks = [t for t in _query_tokens(query).split() if t not in _STOPWORDS]
+    seen = {}
+    def _add(hs):
+        for h in hs or []:
+            sid = h.get("slug")
+            if sid and sid not in seen:
+                seen[sid] = h
+    try:
+        _add(hybrid_hits(client, " ".join(toks[:8]), limit))
+    except Exception:
+        pass
+    limit_i = max(limit * 6, 15)
+    for t in toks[:6]:
+        try:
+            _add(hybrid_hits(client, t, limit_i))
+        except Exception:
+            continue
+    return _memory_first(list(seen.values()))[:limit]
+
