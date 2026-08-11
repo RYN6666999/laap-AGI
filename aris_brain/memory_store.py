@@ -160,24 +160,29 @@ def _memory_first(hits: list) -> list:
 
 
 def hybrid_hits_any(client, query: str, limit: int) -> list:
-    """整串查 + 逐 token 查併集；停用詞過濾；laap/memory 優先（2026-08-12）。"""
+    """整串查 + 逐 token 查併集；停用詞過濾；laap/memory 優先（2026-08-12）。
+
+    速度優化（00:5x 實測整串查+6 token×limit15 = 21 秒太慢，LLM 兜底等不到）：
+      - 不做整串查（自然句整串命中率≈0，白燒一次）
+      - 鑑別性 token 優先（含英數的最有辨識度），最多 4 個
+      - per-token limit 縮小
+    """
     from gbrain_client import hybrid_hits
     toks = [t for t in _query_tokens(query).split() if t not in _STOPWORDS]
+    if not toks:
+        return []
+    toks.sort(key=lambda t: (not any(ch.isascii() and ch.isalnum() for ch in t), len(t)))
+    toks = toks[:4]
     seen = {}
     def _add(hs):
         for h in hs or []:
             sid = h.get("slug")
             if sid and sid not in seen:
                 seen[sid] = h
-    try:
-        _add(hybrid_hits(client, " ".join(toks[:8]), limit))
-    except Exception:
-        pass
-    limit_i = max(limit * 6, 15)
-    for t in toks[:6]:
+    limit_i = max(limit * 3, 10)
+    for t in toks:
         try:
             _add(hybrid_hits(client, t, limit_i))
         except Exception:
             continue
     return _memory_first(list(seen.values()))[:limit]
-
