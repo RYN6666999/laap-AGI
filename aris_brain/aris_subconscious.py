@@ -70,16 +70,22 @@ class QuantumSubconscious:
         logger.info(f"QuantumSubconscious initialized (interval={interval}s)")
 
     def _init_engine(self):
-        """加载 V12.5 引擎"""
+        """加载 V12 引擎。
+
+        注意（2026-08-11 覆核）：真实模块是 `aris_v12_dense_kernel`
+        （V12DenseKernel / ArisLMv12，「Deep Quantum Kernel Layer」，
+        Ψ-integration 已在载入）。旧名 `aris_v12_5_engine` 从未存在
+        （upstream/overlay/git 历史全无）——之前的 engine=None 导致
+        start() 自我停用、quantum_output.json 无生产者。"""
         try:
-            from aris_v12_5_engine import ArisV12Engine, MarkovChainV12
-            self._engine = ArisV12Engine()
-            self._markov = MarkovChainV12()
-            logger.info("V12.5 engine loaded for subconscious")
+            from aris_v12_dense_kernel import ArisLMv12, V12DenseKernel
+            self._engine = ArisLMv12()
+            self._kernel = V12DenseKernel()
+            logger.info("V12 dense kernel engine loaded for subconscious")
         except Exception as e:
-            logger.warning(f"V12.5 engine unavailable: {e}")
+            logger.warning(f"V12 engine unavailable: {e}")
             self._engine = None
-            self._markov = None
+            self._kernel = None
 
     # ── 公开接口 ──────────────────────────────────────
 
@@ -241,15 +247,11 @@ class QuantumSubconscious:
 
         try:
             if self._engine:
-                # 用种子词调用引擎
-                text = self._engine.respond(
-                    " ".join(words[:8]),
-                    use_v12_fast=True,
-                    use_psi=True,
-                )
-                if text and text != "嗯？我在听你说～":
-                    source = "v12_psi"
-                    coherence = 0.3  # V12 路径通常有中等连贯性
+                # 用种子词调用引擎（ArisLMv12.respond 只吃 message）
+                text = self._engine.respond(" ".join(words[:8]))
+                if text and text != "嗯？我在听你说～" and "正在全力理解" not in text:
+                    source = "v12_dense"
+                    coherence = 0.3  # V12 dense 路径通常有中等连贯性
                     return text, source, coherence
 
             if self._markov:

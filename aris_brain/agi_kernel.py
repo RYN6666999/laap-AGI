@@ -313,6 +313,11 @@ class AGIKernel:
                f"概念: {len(self.core.vm.concept_network)} | "
                f"记忆: {len(self.core.vm.associative_memory)}")
         self.bridge.send(f"[Aris] {msg}")
+        try:
+            from laap.evolve_gate import record as _gate
+            _gate("agi-birth", "announce", {"msg": msg})
+        except Exception as _ge:
+            logger.debug(f"birth gate skip: {_ge}")
     
     def _heartbeat_loop(self):
         """核心心跳 — 2.5s PSI循环"""
@@ -353,6 +358,11 @@ class AGIKernel:
                 diag = self.heal.diagnose()
                 if diag:
                     self._state["heals"] += 1
+                    try:
+                        from laap.evolve_gate import record as _gate
+                        _gate("agi-heal", "diagnosis", {"diag": str(diag)[:400]})
+                    except Exception as _ge:
+                        logger.debug(f"heal gate skip: {_ge}")
             except Exception as e:
                 logger.debug(f"元认知: {e}")
     
@@ -367,6 +377,14 @@ class AGIKernel:
                 if prop:
                     self._state["evolutions"] += 1
                     logger.info(f"进化提案: {prop.get('hypothesis','?')[:60]}")
+                    try:
+                        # 2026-08-12 演化閘門：提案入閘（可審可回退），不自動落地
+                        from laap.evolve_gate import record as _gate
+                        _gate("agi-evolve", "proposal",
+                              {"hypothesis": prop.get("hypothesis"),
+                               "detail": str(prop)[:600]})
+                    except Exception as _ge:
+                        logger.debug(f"evolve gate skip: {_ge}")
             except Exception as e:
                 logger.debug(f"进化: {e}")
     

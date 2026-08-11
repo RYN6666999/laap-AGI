@@ -386,10 +386,11 @@ class LaapIntegrator:
     def load_subconscious(self) -> bool:
         """加载量子潜意识"""
         try:
-            from aris_subconscious import QuantumSubconscious
-            sc = QuantumSubconscious(interval=5.0)
+            # 2026-08-12：改用全局 singleton（chatflow 會 feed 同一個實例）
+            from aris_subconscious import get_subconscious
+            sc = get_subconscious(interval=5.0)
             self.modules["subconscious"] = sc
-            logger.info("🌊 潜意识: 已创建 (未启动)")
+            logger.info("🌊 潜意识: 已创建 (未启动，靠 chatflow feed 喚醒)")
             return True
         except Exception as e:
             logger.warning(f"潜意识加载失败: {e}")
