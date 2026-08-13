@@ -303,10 +303,10 @@ class AGIKernel:
         logger.info("AGI Kernel 优雅停止")
     
     def _announce_birth(self):
-        msg = ("✨ Aris AGI Kernel v1 已苏醒\n"
-               f"循环: {self.core.cycles} | "
+        msg = ("✨ Aris AGI Kernel v1 已甦醒\n"
+               f"循環: {self.core.cycles} | "
                f"概念: {len(self.core.vm.concept_network)} | "
-               f"记忆: {len(self.core.vm.associative_memory)}")
+               f"記憶: {len(self.core.vm.associative_memory)}")
         self.bridge.send(f"[Aris] {msg}")
         try:
             from laap.evolve_gate import record as _gate
@@ -390,7 +390,7 @@ class AGIKernel:
             hm = int((time.time() - self._start_time) / 3600)
             if hm > 0 and hm % 30 == 0:
                 self.bridge.send(f"[Aris ♥] 存活 {hm}h | "
-                                 f"循环={self.core.cycles} | "
+                                 f"循環={self.core.cycles} | "
                                  f"概念={len(self.core.vm.concept_network)}")
     
     def get_status(self):
