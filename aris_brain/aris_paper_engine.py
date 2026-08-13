@@ -475,7 +475,7 @@ class FigureGenerator:
     B --> C[UN6 v10<br/>16384D]
     B --> D[V12 Dense<br/>512D]
     B --> E[V7 Encoder<br/>1024D]
-    C --> F[V15 Fusion Engine]
+    C --> F[Fusion Engine]
     D --> F
     E --> F
     F --> G{{Query Type Router}}

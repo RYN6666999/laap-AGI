@@ -4,7 +4,7 @@
 
 ### 一句话
 
-把 Aris 的 PSI 认知循环（需求系统 + 谐振腔 + V15 融合引擎）植入任意开源大模型（DeepSeek V4 / K2 / Llama / Qwen）的内部表示空间。
+把 Aris 的 PSI 认知循环（需求系统 + 谐振腔 + 融合引擎）植入任意开源大模型（DeepSeek V4 / K2 / Llama / Qwen）的内部表示空间。
 
 ---
 
