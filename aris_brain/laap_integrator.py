@@ -526,21 +526,6 @@ class LaapIntegrator:
             logger.warning(f"运行时情感引擎加载失败: {e}")
             return False
 
-    def load_fusion_v15(self) -> bool:
-        """加载 V15 深度融合引擎 — 自适应语义路由 + 注意力融合 + 谐振归一化"""
-        try:
-            from aris_fusion_v15 import FusionEngineV15
-            eng = FusionEngineV15(dim=1024)
-            # 快速预热
-            warmup = eng.cycle("预热测试", temperature=0.3)
-            self.modules["fusion_v15"] = eng
-            logger.info(f"🧠 V15融合引擎: {warmup['latency_ms']:.1f}ms预热 | "
-                        f"源={warmup['source']} | 情感={warmup['emotion']}")
-            return True
-        except Exception as e:
-            logger.warning(f"V15融合引擎加载失败: {e}")
-            return False
-
     # ════════════════════════════════════════════════════════════
     # NEW: Voice Cortex — LLM 声带控制系统
     # ════════════════════════════════════════════════════════════
@@ -796,8 +781,6 @@ class LaapIntegrator:
             ("hebbian", self.load_hebbian_learner),
             ("world_model", self.load_internal_world),
             ("runtime_emotion", self.load_runtime_emotion),
-            # NEW: V15 深度融合引擎
-            ("fusion_v15", self.load_fusion_v15),
             # NEW: LAAP Tools (外脑工具集)
             ("laap_tools", self.load_laap_tools),
             # NEW: Voice Cortex (LLM 声带控制系统)
@@ -1196,15 +1179,6 @@ class LaapIntegrator:
         # NEW: 运行时情感
         if "runtime_emotion" in self.modules:
             details["runtime_emotion"] = self.modules["runtime_emotion"].to_dict()
-        # NEW: V15 融合引擎
-        if "fusion_v15" in self.modules:
-            eng = self.modules["fusion_v15"]
-            details["fusion_v15"] = {
-                "cycles": eng._cycle_count,
-                "avg_latency_ms": round(eng._total_latency / max(1, eng._cycle_count), 1),
-                "dim": eng.dim,
-            }
-
         # NEW: LAAP Tools
         if "laap_tools" in self.modules:
             details["laap_tools"] = self.modules["laap_tools"]
