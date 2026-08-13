@@ -189,63 +189,43 @@ class AutonomyEngine:
         return self.engine.update()
 
 # ════════════════════════════════════════════════════════════
-# 层 5: 飞书直连桥（无 Hermes）
+# 层 5: 本機通知（macOS 系統彈窗，取代飛書）
 # ════════════════════════════════════════════════════════════
 
-class DirectFeishuBridge:
-    """直接飞书 REST API — 无需 Hermes 网关"""
-    
-    FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "")
-    FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "")
-    TARGET_CHAT = os.environ.get("FEISHU_CHAT_ID", "")
-    
+def notify_macos(title: str, text: str) -> bool:
+    """macOS 系統通知 —— 本機、無網路、fire-and-forget。
+
+    取代舊飛書(Feishu) REST send：那是同步無 timeout 的網路呼叫，在啟動路徑
+    (_announce_birth) 上會無限阻塞 → 第一個請求 hang（watchdog 換進程）。
+    本機 osascript `display notification` 約 0.3s，加 timeout 保底，不擋啟動。
+    """
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["osascript", "-e",
+             'display notification "' + _esc_apple(text) + '" with title "' + _esc_apple(title) + '"'],
+            capture_output=True, text=True, timeout=5)
+        return r.returncode == 0
+    except Exception as e:
+        logger.warning(f"[agi_kernel] 系統通知失敗: {e}")
+        return False
+
+
+def _esc_apple(s: str) -> str:
+    """AppleScript 字串逃逸：\\ 與 \" 必須轉義，避免斷句/注入。"""
+    return str(s).replace("\\", "\\\\").replace('"', '\\"')
+
+
+class LocalNotifier:
+    """本機通知橋 —— send(text) 介面與舊 DirectFeishuBridge 相容。"""
+
     def __init__(self):
-        # 密钥从环境变量读取（见 .env）
+        # 無 SDK / 無網路 / 無密鑰。純本機。
         pass
-        self._token = None
-        self._token_expiry = 0
-        self.client = None
-        self._init_sdk()
-    
-    def _init_sdk(self):
-        try:
-            import lark_oapi as lark
-            from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
-            self.lark = lark
-            self.CreateMessageRequest = CreateMessageRequest
-            self.CreateMessageRequestBody = CreateMessageRequestBody
-            self.client = lark.Client.builder() \
-                .app_id(self.FEISHU_APP_ID) \
-                .app_secret(self.FEISHU_APP_SECRET) \
-                .build()
-            logger.info("飞书SDK就绪")
-        except ImportError as e:
-            logger.warning(f"飞书SDK不可用: {e}")
-    
-    def send(self, text: str) -> bool:
-        if not self.client:
-            return False
-        try:
-            import json, uuid
-            body = self.CreateMessageRequestBody.builder() \
-                .receive_id(self.TARGET_CHAT) \
-                .msg_type("text") \
-                .content(json.dumps({"text": text})) \
-                .uuid(str(uuid.uuid4())) \
-                .build()
-            req = self.CreateMessageRequest.builder() \
-                .receive_id_type("chat_id") \
-                .request_body(body) \
-                .build()
-            resp = self.client.im.v1.message.create(req)
-            return resp.success()
-        except Exception as e:
-            logger.warning(f"飞书发送失败: {e}")
-            return False
 
-# ════════════════════════════════════════════════════════════
-# AGI Kernel — 整合所有层
-# ════════════════════════════════════════════════════════════
+    def send(self, text: str) -> bool:
+        return notify_macos("Aris", text)
+
 
 class AGIKernel:
     """Aris AGI 自主内核 — 集合所有层的单例"""
@@ -261,7 +241,7 @@ class AGIKernel:
         self.heal = SelfHealEngine()
         self.evolve = SelfEvolveEngine()
         self.autonomy = AutonomyEngine()
-        self.bridge = DirectFeishuBridge()
+        self.bridge = LocalNotifier()
         self._running = False
         self._threads = []
         self._start_time = time.time()
