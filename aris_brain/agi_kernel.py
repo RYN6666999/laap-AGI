@@ -237,11 +237,14 @@ class AGIKernel:
     FEISHU_HEARTBEAT_S = 60 # 1min 飞书保活
     
     def __init__(self):
-        self.core = PsiLangCore()
-        self.heal = SelfHealEngine()
-        self.evolve = SelfEvolveEngine()
-        self.autonomy = AutonomyEngine()
+        # 輕量構造：重引擎(PsiLangCore+三引擎 ~21s)延後到背景 thread _init_engines()，
+        # __init__ 秒回，不卡任何請求路徑（2026-08-13：先前同步建引擎是首請求 hang 根因）。
+        self.core = None
+        self.heal = None
+        self.evolve = None
+        self.autonomy = None
         self.bridge = LocalNotifier()
+        self._engine_ready = False
         self._running = False
         self._threads = []
         self._start_time = time.time()
@@ -249,17 +252,29 @@ class AGIKernel:
             "cycles": 0, "heals": 0, "evolutions": 0,
             "autonomy_ticks": 0, "messages_sent": 0,
         }
+
+    def _init_engines(self) -> None:
+        """背景初始化重引擎（PsiLangCore + 三引擎）。只執行一次。"""
+        if self._engine_ready:
+            return
+        self.core = PsiLangCore()
+        self.heal = SelfHealEngine()
+        self.evolve = SelfEvolveEngine()
+        self.autonomy = AutonomyEngine()
+        self._engine_ready = True
         logger.info("=" * 50)
-        logger.info("  Aris AGI Kernel v1 初始化")
+        logger.info("  Aris AGI Kernel v1 引擎就緒")
         logger.info(f"  PsiLang: {self.core.dim}D / {self.core.vm.get_entropy():.3f}熵")
         logger.info(f"  概念: {len(self.core.vm.concept_network)}")
         logger.info(f"  记忆: {len(self.core.vm.associative_memory)}")
         logger.info("=" * 50)
     
     def start(self):
-        """启动多线程引擎"""
+        """启动多引擎（由背景 thread 呼叫，勿在請求路徑同步跑）。
+        先背景初始化重引擎（可能 ~21s），再拉起各迴圈。"""
         self._running = True
         PID_FILE.write_text(str(os.getpid()))
+        self._init_engines()
         
         threads = [
             ("heartbeat", self._heartbeat_loop, self.HEARTBEAT_MS / 1000),
@@ -392,6 +407,24 @@ class AGIKernel:
 # ════════════════════════════════════════════════════════════
 # 入口
 # ════════════════════════════════════════════════════════════
+
+def spawn_kernel(disable_env: str = "AGI_KERNEL") -> "AGIKernel":
+    """在背景 daemon thread 啟動 AGI kernel（非阻塞、不卡請求路徑）。
+
+    - AGIKernel() 秒回（引擎延後）；start() 在 daemon thread 裡先 _init_engines()
+      （~21s）再拉迴圈 → 呼叫處永遠不等它，health/首 chat 不卡。
+    - 可用 env 關閉：export AGI_KERNEL=off（kill switch，可回退）。
+    回傳 kernel 實例；被關閉時回 None。
+    """
+    import os as _os
+    if _os.environ.get(disable_env, "on").lower() in ("off", "0", "false", "no"):
+        logger.info(f"[agi_kernel] {disable_env}=off，跳過啟動")
+        return None
+    k = AGIKernel()
+    threading.Thread(target=k.start, name="agi-kernel-spawn", daemon=True).start()
+    logger.info("[agi_kernel] spawn_kernel 已投遞背景 thread 啟動（不阻塞）")
+    return k
+
 
 if __name__ == "__main__":
     import sys
