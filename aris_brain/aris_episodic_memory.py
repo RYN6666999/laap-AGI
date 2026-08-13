@@ -55,8 +55,8 @@ class EpisodicMemory:
                 self._episodes = []
 
     def _save(self):
-        with open(self.store_path, 'w', encoding='utf-8') as f:
-            json.dump({"episodes": self._episodes[-MAX_EPISODES:]}, f, ensure_ascii=False, indent=2)
+        from atomic_json import write_json
+        write_json(self.store_path, {"episodes": self._episodes[-MAX_EPISODES:]})
 
     def save_episode(self, user_input: str, intent: str, rule: str,
                      output: str, success: bool = True, latency_ms: float = 0):

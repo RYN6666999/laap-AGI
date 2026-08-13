@@ -1,0 +1,171 @@
+{
+  "positive_concepts": {
+    "ai_collaboration": {
+      "weight": 0.35,
+      "phrases": [
+        "兩個 AI",
+        "雙 AI",
+        "協作",
+        "對局",
+        "驗證",
+        "檢驗",
+        "AI 協作",
+        "collaboration",
+        "protocol",
+        "對帳",
+        "互相檢查",
+        "交叉驗證",
+        "互相驗證",
+        "比對",
+        "另一份",
+        "另一邊",
+        "對方",
+        "另一方",
+        "同時寫",
+        "不交換",
+        "不討論",
+        "獨立完成",
+        "封盤",
+        "對答案",
+        "比答案",
+        "結論不一樣",
+        "結論不一致",
+        "結論對不上"
+      ]
+    },
+    "verification_audit": {
+      "weight": 0.25,
+      "phrases": [
+        "驗收",
+        "稽核",
+        "審查",
+        "審驗",
+        "檢驗",
+        "檢查",
+        "確認",
+        "對照",
+        "比對",
+        "audit",
+        "verify",
+        "validation",
+        "反向測試",
+        "反向驗證",
+        "突變測試",
+        "取樣範圍",
+        "原始輸出"
+      ]
+    },
+    "claim_evidence": {
+      "weight": 0.2,
+      "phrases": [
+        "主張",
+        "宣稱",
+        "論點",
+        "結論",
+        "證據",
+        "證明",
+        "實跑",
+        "原始輸出",
+        "可證偽",
+        "預測",
+        "判準",
+        "附來源",
+        "取樣",
+        "截圖"
+      ]
+    },
+    "conflict_resolution": {
+      "weight": 0.15,
+      "phrases": [
+        "矛盾",
+        "衝突",
+        "不一致",
+        "對不上",
+        "數字不同",
+        "結論不同",
+        "雙方數字",
+        "分歧",
+        "誰對",
+        "誰錯",
+        "要怎麼處理",
+        "該怎麼處理"
+      ]
+    }
+  },
+  "negative_concepts": {
+    "no_skill": {
+      "weight": 0.5,
+      "phrases": [
+        "摘要",
+        "翻譯",
+        "解釋",
+        "說明",
+        "brainstorm",
+        "發想",
+        "一次性",
+        "不會重複",
+        "summary",
+        "translate"
+      ],
+      "exclusive": false
+    },
+    "pure_qa": {
+      "weight": 0.35,
+      "phrases": [
+        "問答",
+        "回答問題",
+        "Q&A",
+        "單純問",
+        "只是問",
+        "quick question"
+      ],
+      "exclusive": false
+    },
+    "single_task": {
+      "weight": 0.3,
+      "phrases": [
+        "直接幫我寫 code",
+        "幫我 implement",
+        "code only",
+        "寫程式",
+        "純寫 code",
+        "不需要規則"
+      ],
+      "exclusive": false
+    }
+  },
+  "fallback_positive_concepts": [
+    "ai_collaboration",
+    "verification_audit"
+  ],
+  "optimizer_hints": {
+    "capability": "產生兩份 AI 協作的對局規則，讓矛盾能被快速暴露",
+    "inputs": [
+      "模糊任務描述",
+      "系統狀態",
+      "雙方報告的數字",
+      "讀碼推論",
+      "實測結果"
+    ],
+    "trigger_actions": [
+      "幫我出一份讓兩個 AI 同時寫的規則",
+      "幫我設計一個驗收流程",
+      "我要比對兩份報告",
+      "防止對方含混交差",
+      "我跟他數字對不上"
+    ],
+    "exclusions": [
+      "純問答",
+      "摘要",
+      "翻譯",
+      "單人寫 code",
+      "不涉及多人協作"
+    ],
+    "artifacts": [
+      "對局規則 markdown",
+      "受測對象確認表",
+      "判準列表",
+      "矛盾記錄"
+    ]
+  }
+}

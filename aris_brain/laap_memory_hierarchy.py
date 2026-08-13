@@ -77,9 +77,8 @@ def load_memory() -> Optional[dict]:
 
 
 def save_memory(memory: dict):
-    STATE_DIR.mkdir(exist_ok=True)
-    path = STATE_DIR / "memory_hierarchy.json"
-    path.write_text(json.dumps(memory, ensure_ascii=False, indent=2), encoding='utf-8')
+    from atomic_json import write_json
+    write_json(STATE_DIR / "memory_hierarchy.json", memory)
 
 
 def _compute_emotional_weight(text: str) -> float:

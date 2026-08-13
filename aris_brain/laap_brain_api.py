@@ -128,15 +128,15 @@ def process_with_laap(messages: list, model: str = "laap-core") -> dict:
         }
 
     # ── Step 1: Cognitive Bridge ──
+    # 注意：ArisCognitiveBridge 沒有 process()（上游也沒有，call site 從第一天就叫錯）。
+    # 正確介面是 before_turn()/after_turn()。before_turn 回傳認知上下文（無 direct_response），
+    # 併入 user_msg 讓下游引擎（RulesEngine/DesireEngine/psi-llm）看得到。
     try:
         from aris_cognitive_bridge import get_bridge as get_cognitive_bridge
         bridge = get_cognitive_bridge()
-        bridge_result = bridge.process(user_msg)
-        if bridge_result and bridge_result.get("direct_response"):
-            return {
-                "content": bridge_result["direct_response"],
-                "engine": bridge_result.get("decision", "laap-core")
-            }
+        ctx = bridge.before_turn(user_msg)
+        if ctx and ctx.get("cognitive_context"):
+            user_msg = f"[认知状态]\n{ctx['cognitive_context']}\n\n[用户] {user_msg}"
     except Exception as e:
         logging.debug(f"Cognitive bridge fallback: {e}")
 

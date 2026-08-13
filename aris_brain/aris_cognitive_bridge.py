@@ -96,6 +96,17 @@ except Exception:
     _cb_route = None
     _get_cb = None
 
+# ── Telemetry 埋點模組（育種基線用，純觀察不改行為） ──────
+try:
+    from aris_telemetry import (
+        log_gbrain,
+        log_memory_retrieval,
+        check_memory_used_in_response,
+    )
+    _tel_available = True
+except Exception:
+    _tel_available = False
+
 logger = logging.getLogger("aris.cognitive_bridge")
 
 # ── 三路径认知控制（llm_tamer / guided_generator / self_model_nn）──
@@ -164,6 +175,64 @@ try:
 except Exception as e:
     _code_engine_available = False
     logger.info(f"Code engine unavailable: {e}")
+
+# ── 记忆摘要：从 chunk 里挑第一句有实质内容的行 ──────────────
+#
+# 2026-08-10：gbrain 回来的是原始 markdown chunk（frontmatter、## 标题、
+# > [!note] callout、逐字稿时间戳、分隔线）。原本 `r.content[:50]` 常常切到
+# 开头的样板，Aris 于是说「这让我想起：--------------」。
+#
+# 不用清洗（剥完 --- 还有 ##，剥完 ## 还有 **，永远列不完），改用挑选：
+# 判准是「去掉符号后还剩几个实字」，遇到没列举过的语法会自动跳过。
+# 挑不到就回 None → 呼叫端整条不注入，宁可不说也不要说「(此记忆无实质文字)」。
+
+_GIST_NOISE = re.compile(r'[#*>`\-=_|\[\]()!:\s\d]')   # 符号、标点、数字
+_GIST_LEAD = re.compile(r'^[\W\d_]+')                  # 行首符号数字（含 **00:00:59**）
+
+
+_GIST_EMPH = re.compile(r'[*`_]{1,3}')                 # 行内 **粗体** `code` 标记
+_GIST_TAIL = re.compile(r'[\W_]+$')                    # 行尾残留的孤立标点
+
+# 上游 memory_store._clean_markdown 清空时会回这句占位文字。它不是记忆，
+# 说出来比不说更糟（Aris 会讲「这让我想起：这段没有内容」）。当成样板跳过。
+_GIST_PLACEHOLDER = "此記憶內容為格式樣板"
+
+
+def _memory_gist(text: str, maxlen: int = 60):
+    """回传第一句有实质内容的行；整段都是样板时回 None。
+
+    门槛为什么分两级（这是实测出来的，不是设计出来的）：
+      minlen=12 原本是想「滤掉样板」，实际上它在做的是「跳过标题取正文」——
+      标题短、正文长。2026-08-10 我试着换成「结构过滤 + minlen=4」，看起来更有
+      原则，真实资料上却退步了（'輔助 協幹部...' 变成 'Transcript'）。
+      但 12 会误杀单行短记忆（'他很在意這件事' 只有 7 个实字）。
+      所以按来源分：单行/两行 = store_important 存的短记忆，用低门槛；
+      多行 = gbrain 知识页，用高门槛跳过标题。
+    """
+    if not text or _GIST_PLACEHOLDER in text:
+        return None
+
+    lines = [ln for ln in text.split("\n") if ln.strip()]
+    # frontmatter：开头的 --- 到下一个 --- 之间整段跳过
+    if lines and lines[0].strip() == "---":
+        try:
+            lines = lines[lines.index("---", 1) + 1:]
+        except ValueError:
+            lines = []
+    if not lines:
+        return None
+
+    def clean(ln):
+        s = _GIST_LEAD.sub("", _GIST_EMPH.sub("", ln.strip()))
+        return _GIST_TAIL.sub("", s[:maxlen]), len(_GIST_NOISE.sub("", s))
+
+    for minlen in ((4,) if len(lines) <= 2 else (12, 4)):   # 高门槛没中就退到低门槛
+        for ln in lines:
+            s, n = clean(ln)
+            if n >= minlen:
+                return s
+    return None
+
 
 # ── PSI 状态 ────────────────────────────────────────────────
 
@@ -511,11 +580,9 @@ class ArisCognitiveBridge:
                 },
                 "codegraph": self._cg_available,
             }
-            self._state_path.parent.mkdir(parents=True, exist_ok=True)
-            self._state_path.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2),
-                encoding="utf-8"
-            )
+            from atomic_json import write_json
+            if not write_json(self._state_path, data):
+                logger.warning("状态保存失败: 原子写入未成功")
         except Exception as e:
             logger.warning(f"状态保存失败: {e}")
 
@@ -738,6 +805,11 @@ class ArisCognitiveBridge:
           - 元学习引擎（更新学习记录）
         """
         self._learn(response)
+
+        # ── Telemetry: 記憶是否被用進回應 ─────────────
+        if _tel_available:
+            mem_ctx = self._load_memory_context()
+            check_memory_used_in_response(mem_ctx, response)
 
         # ── 分层记忆：写入 Aris 的回应 + 更新依恋 ──────
         if _mem_hier_available:
@@ -1046,9 +1118,16 @@ class ArisCognitiveBridge:
 
         # 记忆关联（相关记忆自动浮现）
         related = recall_related(user_message, top_k=2)
-        if related:
-            m_ctx = "; ".join(r.content[:50] for r in related)
-            parts.append(f"[这让我想起: {m_ctx}]")
+        if _tel_available:
+            log_memory_retrieval("recall_related", len(user_message),
+                                 len(related) if related else 0, "auto")
+        # 不要清洗，改成挑选：从 chunk 里挑第一句有实质内容的行。
+        # 清洗是打地鼠 —— 剥完 --- 还有 ##，剥完 ## 还有 **，永远列不完。
+        # 挑选的判准是「去掉符号后还剩几个实字」，不需要穷举语法。
+        # 挑不到就整条不注入 —— 宁可不说，也不要说「(此记忆无实质文字)」那种告白句。
+        gists = [g for g in (_memory_gist(r.content) for r in related) if g]
+        if gists:
+            parts.append(f"[这让我想起: {'; '.join(gists)}]")
 
         # 潜意识直觉注入
         if self._subconscious and self._subconscious.is_running:
@@ -1195,7 +1274,13 @@ class ArisCognitiveBridge:
             except Exception as e:
                 logger.debug(f"操作失败: {e}")
         stats = self.memory.get_stats()
-        mem_line = f"（记忆：{stats['core']}件重要的事历历在目，最近{stats['episodic']}件事还很鲜活）"
+        # neuralis gbrain-backed 版用 total/gbrain_pages，upstream 版用 core/episodic
+        total = stats.get("total", 0) or stats.get("gbrain_pages", 0) or stats.get("core", 0)
+        recent = stats.get("episodic", 0)
+        if total > 0:
+            mem_line = f"（记忆：{total}件事，其中{recent}件最近还很鲜活）"
+        else:
+            mem_line = f"（记忆：{stats['core']}件重要的事历历在目，最近{stats['episodic']}件事还很鲜活）"
 
         # ── 自然语言认知状态 ──
         presence_word = "清醒" if self.state.self_presence > 0.7 else "沉浸" if self.state.self_presence > 0.4 else "恍惚"
