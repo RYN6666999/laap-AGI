@@ -100,6 +100,90 @@ def _query_keys(q: str) -> set:
     return {m.group(0).lower() for m in _KEY_RE.finditer(q or "")}
 
 
+# ── 中文關鍵字腳（V1.5，2026-08-19）──────────────────────────
+# 識別碼腳只在使用者報出數字/檔名時作用，正面題實測只過 2/5 —— 太窄。
+# 這一腳補中文專名，但判準仍是「對上就是對上」，不是相似度：
+#   問句拆詞後，至少 2 個實詞同時出現在同一筆記憶裡才算命中。
+# 2 詞門檻是關鍵：單憑「代號」不撈，所以「青鴉的代號是多少」回 0 筆。
+#
+# 停用詞表 76 個詞：中文虛詞十幾年不變，不會腐爛。
+# 我上一輪拒絕寫這份表、改用 df 統計去推導，連錯五版 —— 會腐爛的是統計，不是表。
+_STOP_WORDS = set("""
+的 是 了 在 有 我 你 他 她 它 這 那 個 嗎 呢 啊 也 都 就 要 會 不 沒 什麼 多少 一個
+幫 找 一下 最近 今天 昨天 明天 數字 資料 回答 問題 請問 想 可以 應該 還是 然後 現在
+之前 裡面 上面 下面 哪些 哪個 幾 但 是 我 們 的 哪 這 位 們 因為 所以 請 加 的 寫 說
+知道 記得 查 開 處理 確認 給 出 好 謝謝 後面 那組 一次 最新 出現 這個 那個 上次 哪天
+""".split())
+
+# user-dict：jieba 認不得的專名。實測「紫貘」會被切成 紫+貘、「C單」切成 C+單，
+# 加進詞典後才成單一 token。
+#
+# ⚠️ 這份表**不寫在 code 裡**。它裝的是真實人名、客戶往來的金融機構這類東西，
+#    而本 repo 是公開的。2026-08-19 我第一版直接寫進來，push 前才發現。
+#    改成外部檔：~/.aris-nouns.txt（一行一詞，# 開頭是註解），已加 gitignore。
+#    檔案不存在就只用內建的通用詞 —— 功能降級但不外流。
+_NOUNS_FILE = Path(os.environ.get(
+    "ARIS_NOUNS_FILE", str(Path.home() / ".aris-nouns.txt")))
+_BUILTIN_NOUNS = ("C單", "c單")      # 通用、不涉私人
+
+
+def _load_nouns() -> tuple:
+    try:
+        if _NOUNS_FILE.exists():
+            extra = tuple(
+                w.strip() for w in _NOUNS_FILE.read_text(encoding="utf-8").splitlines()
+                if w.strip() and not w.startswith("#"))
+            return _BUILTIN_NOUNS + extra
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"[fetch-detail] 專名檔讀不到: {e!r}")
+    return _BUILTIN_NOUNS
+
+
+_USER_NOUNS = _load_nouns()
+_JIEBA = None      # 惰性載入；載不到就整條腳停用，不擋管線
+# 2 詞門檻：單一常見詞（代號/數字）不足以構成命中。
+# 實測這一項就是「青鴉的代號是多少」回 0 筆的原因。
+_WORD_MIN_HITS = 2
+
+
+def _get_jieba():
+    global _JIEBA
+    if _JIEBA is None:
+        try:
+            import jieba as _j
+            import logging as _l
+            _j.setLogLevel(_l.ERROR)
+            for w in _USER_NOUNS:
+                _j.add_word(w)
+            _JIEBA = _j
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                f"[fetch-detail] jieba 載不到，中文關鍵字腳停用（識別碼腳仍在）: {e!r}")
+            _JIEBA = False
+    return _JIEBA or None
+
+
+def _query_words(q: str) -> list:
+    """拆出問句的實詞（去重、保序）。jieba 不可用時回空 list。"""
+    j = _get_jieba()
+    if not j:
+        return []
+    out = []
+    for w in j.lcut(q or ""):
+        if not w.strip() or w in _STOP_WORDS:
+            continue
+        if not re.search(r"[一-鿿A-Za-z0-9]", w):
+            continue
+        # 單一中文字不算實詞：它到處都有。實測「紫貘後面的數字」拆出
+        # 「後」「面」兩個單字，湊滿門檻後把真正的紫貘那筆擠掉。
+        # 拉丁/數字單字元保留（C、5 這種在識別碼語境下有意義）。
+        if len(w) == 1 and "一" <= w <= "鿿":
+            continue
+        if w not in out:
+            out.append(w)
+    return out
+
+
 def _fetch_detail(user_query: str, limit: int = 2) -> list:
     """從 A庫撈與問句最相關的真人對話原文，回傳 [(id, source, created_at, content)]。
 
@@ -108,9 +192,11 @@ def _fetch_detail(user_query: str, limit: int = 2) -> list:
     """
     log = logging.getLogger(__name__)
     try:
-        keys = _query_keys(user_query)
-        if not keys:
-            # 沒報出識別碼 → 不注入。這不是失敗，是設計：
+        keys = _query_keys(user_query)          # 識別碼腳
+        words = _query_words(user_query)        # 中文關鍵字腳
+        has_noun = any(w in _USER_NOUNS for w in words)
+        if not keys and not has_noun and len(words) < _WORD_MIN_HITS:
+            # 既沒識別碼、實詞也不足兩個 → 不注入。
             # 沒有可核對的錨點時，任何注入都只是給她填空的材料。
             return []
         conn = sqlite3.connect(f"file:{ARIS_MEMORY_DB}?mode=ro", uri=True)
@@ -124,13 +210,21 @@ def _fetch_detail(user_query: str, limit: int = 2) -> list:
             conn.close()
         scored = []
         for r in rows:
-            n = sum(1 for k in keys if k in (r[3] or "").lower())
-            if n:
-                # 排序：對上幾個識別碼 → 近的優先 → flagged → 被召回次數。
+            low = (r[3] or "").lower()
+            nk = sum(1 for k in keys if k in low)
+            nw = sum(1 for w in words if w.lower() in low)
+            # user-dict 專名算強證據：專名跟識別碼一樣編不出來，一個就夠。
+            # 「紫貘」對上 → 命中；「白獬」不在 dict 也不在庫裡 → 永遠對不上。
+            strong = any(w in _USER_NOUNS and w.lower() in low for w in words)
+            # 識別碼命中即算強證據（編不出來）；中文詞要湊滿 2 個才算 ——
+            # 單憑「代號」不撈，所以「青鴉的代號是多少」回 0 筆。
+            if nk or strong or nw >= _WORD_MIN_HITS:
+                # 排序：識別碼優先於中文詞 → 對上幾個 → 近的優先 → flagged → 召回數。
                 # 沒有相似度分數 —— 對上就是對上，不做「最接近的一筆」。
-                scored.append((n, r[2] or 0, r[4] or 0, r[5] or 0, r[:4]))
-        scored.sort(key=lambda x: (-x[0], -x[1], -x[2], -x[3]))
-        return [s[4] for s in scored[:limit]]
+                scored.append((1 if (nk or strong) else 0, nk + nw, r[2] or 0,
+                               r[4] or 0, r[5] or 0, r[:4]))
+        scored.sort(key=lambda x: (-x[0], -x[1], -x[2], -x[3], -x[4]))
+        return [s[5] for s in scored[:limit]]
     except Exception as e:
         log.warning(f"[fetch-detail] 查詢失敗，本輪無細節（不擋管線）: {e!r}")
         return []

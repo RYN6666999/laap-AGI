@@ -81,7 +81,18 @@ from aiohttp import web
 async def handle_cognitive(request):
     """回傳 Aris 的完整認知上下文（PSI Step 1-3: Perceive → Select → Integrate）"""
     global _reflection_rounds_since_last
-    text = request.query.get("text", "")
+    # GET 走 query（短問句）；POST 走 body（長文）。
+    # 2026-08-19 V1.5：URL query 塞不下長文 —— 2400 字中文 quote 後約 21600
+    # bytes，遠超 aiohttp 預設 max_line_size 8190。截斷會把後半段關鍵字砍掉，
+    # 中文關鍵字腳因此白搭。加 POST 是唯一不用截斷的解。
+    if request.method == "POST":
+        try:
+            body = await request.json()
+            text = (body or {}).get("text", "")
+        except Exception:
+            text = (await request.text())[:8000]
+    else:
+        text = request.query.get("text", "")
     if not text:
         text = "..."
 
@@ -189,6 +200,7 @@ def main():
     app.router.add_get("/health", handle_health)
     app.router.add_get("/v1/models", handle_models)
     app.router.add_get("/v1/cognitive", handle_cognitive)
+    app.router.add_post("/v1/cognitive", handle_cognitive)   # 長文走 body
     app.router.add_post("/v1/learn", handle_learn)
     log.info(f"Aris Cognitive API on :{port}")
     web.run_app(app, port=port)
