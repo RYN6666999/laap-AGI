@@ -30,6 +30,34 @@ from laap_brain.config import BRAIN_DIR as BRAIN_ROOT, LAAP_ROOT
 from memory_bridge import get_memory_context, recall_related, store_important
 from memory_store import MemoryStore, MemoryFragment
 
+# ── 长期记忆档 ARIS.md（2026-08-19 接入）────────────────────────
+# 单一档案、硬性上限 4KB、每天由 neuralis/scripts/aris-digest.py 压缩取舍。
+# 全文注入，不做检索 —— 檢索会撈错，全载不会。
+# mtime 快取：档案没变就不重读，避免每轮 IO。
+ARIS_DIGEST_PATH = Path(os.environ.get(
+    "ARIS_DIGEST_PATH", str(Path.home() / "Developer/neuralis/ARIS.md")))
+_ARIS_DIGEST_CACHE = {"mtime": -1.0, "text": ""}
+
+
+def _read_aris_digest(max_chars: int = 4000) -> str:
+    """读 ARIS.md。档案不在 / 读失败 → 回空字串，绝不因此挡住整条认知管线。"""
+    try:
+        st = ARIS_DIGEST_PATH.stat()
+    except Exception:
+        return ""
+    if st.st_mtime == _ARIS_DIGEST_CACHE["mtime"]:
+        return _ARIS_DIGEST_CACHE["text"]
+    try:
+        raw = ARIS_DIGEST_PATH.read_text(encoding="utf-8")
+    except Exception as e:
+        logging.getLogger(__name__).info(f"[aris-digest] 读取失败: {e!r}")
+        return ""
+    # § 是档案里的段落分隔符，注入时换成分号读起来才顺
+    text = " ; ".join(s.strip() for s in raw.split("§") if s.strip())[:max_chars]
+    _ARIS_DIGEST_CACHE["mtime"] = st.st_mtime
+    _ARIS_DIGEST_CACHE["text"] = text
+    return text
+
 # ── 分层记忆 + 依恋 + 用户画像 ────────────────────────────────
 try:
     import laap_memory_hierarchy as _mem_hier
@@ -1116,8 +1144,20 @@ class ArisCognitiveBridge:
         self._last_topics = topics
         parts.append(p)
 
+        # 长期记忆（ARIS.md）—— 2026-08-19 接入。
+        # 有硬性上限、每天自动压缩取舍的单一记忆档，全文注入、不做检索，
+        # 所以不会像 recall_related 那样撈到无关碎片。
+        # 由 neuralis/scripts/aris-digest.py 维护；档案不在就静默跳过。
+        _aris_md = _read_aris_digest()
+        if _aris_md:
+            parts.append(f"[我记得（长期记忆）: {_aris_md}]")
+
         # 记忆关联（相关记忆自动浮现）
-        related = recall_related(user_message, top_k=2)
+        # 默认关闭：2026-08-19 实测它撈到「洗手间就在左后方」这类完全无关的
+        # 逐字稿碎片，污染大于帮助。要开回来设 NEURALIS_LEGACY_RECALL=on。
+        related = (recall_related(user_message, top_k=2)
+                   if os.environ.get("NEURALIS_LEGACY_RECALL", "off").lower()
+                   in ("on", "1", "true") else [])
         if _tel_available:
             log_memory_retrieval("recall_related", len(user_message),
                                  len(related) if related else 0, "auto")
