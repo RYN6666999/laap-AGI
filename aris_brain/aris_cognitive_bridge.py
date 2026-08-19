@@ -18,6 +18,8 @@ Aris Cognitive Bridge v1 — PSI 认知循环 ↔ Hermes 运行时桥接
 import logging
 
 import sys, os, time, json, logging, threading, traceback, re
+import sqlite3
+from datetime import datetime
 import numpy as np
 from pathlib import Path
 from typing import Optional, Any, Dict, List, Tuple, Callable
@@ -63,6 +65,83 @@ def _read_aris_digest(max_chars: int = 4000) -> str:
     _ARIS_DIGEST_CACHE["mtime"] = st.st_mtime
     _ARIS_DIGEST_CACHE["text"] = text
     return text
+
+
+# ── A庫細節取回（V1，2026-08-19）─────────────────────────────
+# ARIS.md 是壓縮過的衍生品，細節（檔名/數字/日期）壓縮時就掉了。
+# 這口 SQL 直接讀地面資料 A庫，唯讀、自包含，不碰既有 recall / digest。
+ARIS_MEMORY_DB = Path(os.environ.get(
+    "ARIS_MEMORY_DB", str(Path.home() / ".aris-memory.db")))
+_HUMAN_SOURCES = ("hermes-cli", "webchat", "aris_nd")
+
+# 覆蓋率門檻：命中的 bigram 佔查詢 bigram 的比例。
+# 40% 不是拍的，是量出來的間隙中點 —— 實測 2026-08-19：
+#   正面「C 單的課程費用是多少？」→ #1353 覆蓋 70%
+#   反面「上個月某客戶的融資利率是多少？」→ 最高僅 21%（#1334 談融資但無利率）
+#   反面「台北今天天氣如何」→ 最高 14%
+# 門檻落在 21%~70% 之間即可分離；取 40% 留兩邊餘裕。改判準時請重跑這三句。
+_DETAIL_MIN_RATIO = 0.40
+_DETAIL_MIN_ABS = 3
+
+
+def _grams(s: str) -> set:
+    """中文 bigram。
+
+    不用 split()：中文沒有空白分詞，`user_msg.split()` 會把整句當一個 token，
+    比對必然落空（這是 2026-08-19 修好的舊幻覺成因之一）。
+    也不用整句 LIKE：問句逐字不會出現在儲存內容裡，實測命中 0 筆。
+    """
+    s = "".join(ch for ch in (s or "").lower() if not ch.isspace())
+    return {s[i:i + 2] for i in range(len(s) - 1)}
+
+
+def _fetch_detail(user_query: str, limit: int = 2) -> list:
+    """從 A庫撈與問句最相關的真人對話原文，回傳 [(id, source, created_at, content)]。
+
+    絕不擋管線：任何例外一律回 []（但寫 log，不靜默）。
+    唯讀連線：mode=ro，物理上不可能寫壞地面資料。
+    """
+    log = logging.getLogger(__name__)
+    try:
+        qg = _grams(user_query)
+        if not qg:
+            return []
+        need = max(_DETAIL_MIN_ABS, int(len(qg) * _DETAIL_MIN_RATIO))
+        conn = sqlite3.connect(f"file:{ARIS_MEMORY_DB}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT id, source, created_at, content, flagged, total_recalls "
+                f"FROM memories WHERE source IN ({','.join('?' * len(_HUMAN_SOURCES))})",
+                _HUMAN_SOURCES,
+            ).fetchall()
+        finally:
+            conn.close()
+        scored = []
+        for r in rows:
+            sc = len(qg & _grams(r[3]))
+            if sc >= need:
+                # 排序：相關度 → 近的優先 → flagged → 被召回次數
+                scored.append((sc, r[2] or 0, r[4] or 0, r[5] or 0, r[:4]))
+        scored.sort(key=lambda x: (-x[0], -x[1], -x[2], -x[3]))
+        return [s[4] for s in scored[:limit]]
+    except Exception as e:
+        log.warning(f"[fetch-detail] 查詢失敗，本輪無細節（不擋管線）: {e!r}")
+        return []
+
+
+def _format_detail(hits: list) -> str:
+    """把命中格式化成帶出處鍥的注入行。沒命中回空字串。"""
+    if not hits:
+        return ""
+    lines = []
+    for mid, source, ts, content in hits:
+        try:
+            date = datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d")
+        except Exception:
+            date = "?"
+        body = " ".join((content or "").split())[:600]
+        lines.append(f"[出處: A庫#{mid} · {source} · {date}]: {body}")
+    return "\n".join(lines)
 
 # ── 分层记忆 + 依恋 + 用户画像 ────────────────────────────────
 try:
@@ -1157,6 +1236,19 @@ class ArisCognitiveBridge:
         _aris_md = _read_aris_digest()
         if _aris_md:
             parts.append(f"[我记得（长期记忆）: {_aris_md}]")
+
+        # A庫細節取回（V1，2026-08-19）——地面資料，不經壓縮。
+        # ARIS.md 是壓縮衍生品，細節（檔名/數字/日期）在壓縮時就掉了；
+        # 這裡直接引原文並附出處鍥，讓「有出處才可引用」變成可執行的規則
+        # 而不是口號。沒命中就完全不注入 —— 寧可她說「記憶裡沒有」，
+        # 也不要餵一段弱相關的碎片讓她拿去填空。
+        _detail = _format_detail(_fetch_detail(user_message))
+        if _detail:
+            parts.append(
+                "[記憶原文（可引用，須附出處）]\n" + _detail +
+                "\n[引用規則：上面有出處鍥的才算記得，回答時附上『A庫#編號』；"
+                "上面沒有的細節一律回「記憶裡沒有」，禁止編造檔名、數字或日期。]"
+            )
 
         # 记忆关联（相关记忆自动浮现）
         # 默认关闭：2026-08-19 实测它撈到「洗手间就在左后方」这类完全无关的
