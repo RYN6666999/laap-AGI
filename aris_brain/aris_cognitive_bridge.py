@@ -74,25 +74,30 @@ ARIS_MEMORY_DB = Path(os.environ.get(
     "ARIS_MEMORY_DB", str(Path.home() / ".aris-memory.db")))
 _HUMAN_SOURCES = ("hermes-cli", "webchat", "aris_nd")
 
-# 覆蓋率門檻：命中的 bigram 佔查詢 bigram 的比例。
-# 40% 不是拍的，是量出來的間隙中點 —— 實測 2026-08-19：
-#   正面「C 單的課程費用是多少？」→ #1353 覆蓋 70%
-#   反面「上個月某客戶的融資利率是多少？」→ 最高僅 21%（#1334 談融資但無利率）
-#   反面「台北今天天氣如何」→ 最高 14%
-# 門檻落在 21%~70% 之間即可分離；取 40% 留兩邊餘裕。改判準時請重跑這三句。
-_DETAIL_MIN_RATIO = 0.40
-_DETAIL_MIN_ABS = 3
+# 取回判準：只認「編不出來的東西」——數字與拉丁識別碼。
+#
+# 為什麼中文完全不參與（2026-08-19，四版失敗後的結論）：
+#   v1 bigram 覆蓋率 40%  → 假陰性（紫貘撈不到）+ 假陽性（青鴉撈到 2 筆無關）
+#   v2 IDF 加權          → 更糟。實測 紫貘 idf=1.71 < 多少 idf=4.83，
+#                          「稀有」不等於「有辨識度」；且長文通吃
+#   v3 錨點 + 長度正規化   → 假陽性修好，正面題也一起撈不到
+#   v4 R1 看片段開頭      → 過度攔截，「最新那組數字」「台北今天天氣」全被擋
+#   v5 df≤30% 當精確詞    → 「號是」(跨詞垃圾)、「今天」(常見詞剛好罕見)、
+#                          「數字」壓過「紫貘」——全是 374 筆小語料的統計噪音
+#
+# 放棄的假設：能從語料統計推出「使用者在問哪個東西」。那件事是欠定的。
+# 數字與識別碼沒有這個問題：它們編不出來，對上就是對上，對不上就是沒有。
+# 代價講清楚：使用者沒報出數字/檔名時一律不注入。這是刻意的 ——
+# 本檔的原則是「寧可她說記憶裡沒有，也不要餵她能拿去填空的碎片」。
+#
+# 實測 9/9（3 正面 + 6 反面，含「紫貘後面的數字」這種沒報號碼的問法要回空），
+# 2-5ms。測試在 scratchpad/b2.py，改判準請重跑。
+_KEY_RE = re.compile(r"[0-9]{3,}|[A-Za-z][A-Za-z0-9_.\-]{2,}")
 
 
-def _grams(s: str) -> set:
-    """中文 bigram。
-
-    不用 split()：中文沒有空白分詞，`user_msg.split()` 會把整句當一個 token，
-    比對必然落空（這是 2026-08-19 修好的舊幻覺成因之一）。
-    也不用整句 LIKE：問句逐字不會出現在儲存內容裡，實測命中 0 筆。
-    """
-    s = "".join(ch for ch in (s or "").lower() if not ch.isspace())
-    return {s[i:i + 2] for i in range(len(s) - 1)}
+def _query_keys(q: str) -> set:
+    """抽出問句裡的識別碼：3 位以上數字，或 3 字以上拉丁開頭的 token。"""
+    return {m.group(0).lower() for m in _KEY_RE.finditer(q or "")}
 
 
 def _fetch_detail(user_query: str, limit: int = 2) -> list:
@@ -103,10 +108,11 @@ def _fetch_detail(user_query: str, limit: int = 2) -> list:
     """
     log = logging.getLogger(__name__)
     try:
-        qg = _grams(user_query)
-        if not qg:
+        keys = _query_keys(user_query)
+        if not keys:
+            # 沒報出識別碼 → 不注入。這不是失敗，是設計：
+            # 沒有可核對的錨點時，任何注入都只是給她填空的材料。
             return []
-        need = max(_DETAIL_MIN_ABS, int(len(qg) * _DETAIL_MIN_RATIO))
         conn = sqlite3.connect(f"file:{ARIS_MEMORY_DB}?mode=ro", uri=True)
         try:
             rows = conn.execute(
@@ -118,10 +124,11 @@ def _fetch_detail(user_query: str, limit: int = 2) -> list:
             conn.close()
         scored = []
         for r in rows:
-            sc = len(qg & _grams(r[3]))
-            if sc >= need:
-                # 排序：相關度 → 近的優先 → flagged → 被召回次數
-                scored.append((sc, r[2] or 0, r[4] or 0, r[5] or 0, r[:4]))
+            n = sum(1 for k in keys if k in (r[3] or "").lower())
+            if n:
+                # 排序：對上幾個識別碼 → 近的優先 → flagged → 被召回次數。
+                # 沒有相似度分數 —— 對上就是對上，不做「最接近的一筆」。
+                scored.append((n, r[2] or 0, r[4] or 0, r[5] or 0, r[:4]))
         scored.sort(key=lambda x: (-x[0], -x[1], -x[2], -x[3]))
         return [s[4] for s in scored[:limit]]
     except Exception as e:
