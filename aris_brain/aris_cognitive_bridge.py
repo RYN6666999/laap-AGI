@@ -115,31 +115,21 @@ _STOP_WORDS = set("""
 知道 記得 查 開 處理 確認 給 出 好 謝謝 後面 那組 一次 最新 出現 這個 那個 上次 哪天
 """.split())
 
-# user-dict：jieba 認不得的專名。實測「紫貘」會被切成 紫+貘、「C單」切成 C+單，
-# 加進詞典後才成單一 token。
+# user-dict：jieba 認不得的詞。只留兩個，其餘全刪。
 #
-# ⚠️ 這份表**不寫在 code 裡**。它裝的是真實人名、客戶往來的金融機構這類東西，
-#    而本 repo 是公開的。2026-08-19 我第一版直接寫進來，push 前才發現。
-#    改成外部檔：~/.aris-nouns.txt（一行一詞，# 開頭是註解），已加 gitignore。
-#    檔案不存在就只用內建的通用詞 —— 功能降級但不外流。
-_NOUNS_FILE = Path(os.environ.get(
-    "ARIS_NOUNS_FILE", str(Path.home() / ".aris-nouns.txt")))
-_BUILTIN_NOUNS = ("C單", "c單")      # 通用、不涉私人
+# 2026-08-19 實測（一行 jieba.lcut 就能查，我卻先寫了 13 個詞的外部檔）：
+#   我原本列的 13 個詞裡，11 個（銀行/租賃公司名、人名）jieba 本來就認識。
+#   全 A庫掃描：被 jieba 切碎且重複出現的中文串 460 種，扣掉虛詞剩 17 種，
+#   其中真正像專名的只有「紫貘」（探針測試詞）和 1 組異體字寫法的人名。
+#   → 生產環境需要的真實專名數 = 0。
+#
+# 已知但不修的缺陷：jieba 詞典是簡體，繁體詞會被切碎
+#   （標籤→標+籤、追蹤→追+蹤、臺灣→臺+灣，10 個常用詞裡 6 個中招）。
+#   opencc t2s→切→切回繁體 可修，實測分詞明顯變好（跨詞垃圾「的關」「灣的」消失），
+#   但 5 個相關查詢的**取回筆數完全沒變**。為一個量不到的好處加一個依賴，
+#   就是這份 code 一整晚在對抗的那個病。缺陷登記在此，等有實例再修。
+_USER_NOUNS = ("紫貘", "C單")     # 紫貘=探針測試詞；C單=拉丁+中文混合，jieba 切得開
 
-
-def _load_nouns() -> tuple:
-    try:
-        if _NOUNS_FILE.exists():
-            extra = tuple(
-                w.strip() for w in _NOUNS_FILE.read_text(encoding="utf-8").splitlines()
-                if w.strip() and not w.startswith("#"))
-            return _BUILTIN_NOUNS + extra
-    except Exception as e:
-        logging.getLogger(__name__).warning(f"[fetch-detail] 專名檔讀不到: {e!r}")
-    return _BUILTIN_NOUNS
-
-
-_USER_NOUNS = _load_nouns()
 _JIEBA = None      # 惰性載入；載不到就整條腳停用，不擋管線
 # 2 詞門檻：單一常見詞（代號/數字）不足以構成命中。
 # 實測這一項就是「青鴉的代號是多少」回 0 筆的原因。

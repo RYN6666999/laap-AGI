@@ -65,4 +65,3 @@ _tmp*.py
 node_modules/
 psi_state.json
 audit_log.jsonl
-.aris-nouns.txt
