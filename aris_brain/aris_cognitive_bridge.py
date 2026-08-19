@@ -40,18 +40,24 @@ _ARIS_DIGEST_CACHE = {"mtime": -1.0, "text": ""}
 
 
 def _read_aris_digest(max_chars: int = 4000) -> str:
-    """读 ARIS.md。档案不在 / 读失败 → 回空字串，绝不因此挡住整条认知管线。"""
+    """读 ARIS.md。
+
+    2026-08-19 红队：原本读失败回空字串 = 静默失忆——记忆消失了，
+    她照样自信回答，那正是幻觉的来源。改成回一句「读不到」注进 prompt：
+    她会说「我现在读不到长期记忆」而不是编。
+    删掉「假装正常」，不是加检查。管线一样不挡。
+    """
     try:
         st = ARIS_DIGEST_PATH.stat()
-    except Exception:
-        return ""
+    except Exception as e:
+        return f"⚠️ 长期记忆档读不到（{type(e).__name__}）——这轮我没有长期记忆，不要假装记得"
     if st.st_mtime == _ARIS_DIGEST_CACHE["mtime"]:
         return _ARIS_DIGEST_CACHE["text"]
     try:
         raw = ARIS_DIGEST_PATH.read_text(encoding="utf-8")
     except Exception as e:
-        logging.getLogger(__name__).info(f"[aris-digest] 读取失败: {e!r}")
-        return ""
+        logging.getLogger(__name__).warning(f"[aris-digest] 读取失败: {e!r}")
+        return f"⚠️ 长期记忆档读取失败（{type(e).__name__}）——这轮我没有长期记忆，不要假装记得"
     # § 是档案里的段落分隔符，注入时换成分号读起来才顺
     text = " ; ".join(s.strip() for s in raw.split("§") if s.strip())[:max_chars]
     _ARIS_DIGEST_CACHE["mtime"] = st.st_mtime
