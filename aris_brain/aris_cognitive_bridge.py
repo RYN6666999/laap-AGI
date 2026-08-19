@@ -140,7 +140,16 @@ def _format_detail(hits: list) -> str:
         except Exception:
             date = "?"
         body = " ".join((content or "").split())[:600]
-        lines.append(f"[出處: A庫#{mid} · {source} · {date}]: {body}")
+        # 2026-08-19 實測：把引用規則寫成獨立一行擺在區塊尾巴 → 遵守 0/3。
+        # 原因是它要跟 context 後段的「以 Aris 的身份自然回复」搶注意力，
+        # 位置越後的指令權重越高，我的規則被蓋掉。改成把要求綁在資料本身：
+        # 每筆前後都夾住編號 —— 指令跟它管的東西待在一起，不進位置競賽。
+        lines.append(
+            f"◆ 這段記憶的編號是 A庫#{mid}（{source} · {date}）。"
+            f"用到它就必須在回答裡寫出「A庫#{mid}」，這是硬性要求。\n"
+            f"  內容：{body}\n"
+            f"  ↑ 以上出自 A庫#{mid}，引用請標明。"
+        )
     return "\n".join(lines)
 
 # ── 分层记忆 + 依恋 + 用户画像 ────────────────────────────────
