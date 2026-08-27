@@ -4,15 +4,15 @@ Aris Cognitive Bridge v1 — PSI 认知循环 ↔ Hermes 运行时桥接
 将 LAAP 的 PSI 认知循环挂载到我的日常运行中。
 
 每次用户输入，运行完整的 PSI 循环:
-  1. Perceive   — 感知输入 + 加载记忆 + 情感检测
+  1. Perceive   — 感知输入 + 情感检测
   2. Select     — 需求评估 → 注意力焦点
   3. Integrate  — 融合认知状态 → 注入 system prompt
   4. Act        — LLM 作为语言I/O通道
-  5. Learn      — 更新世界模型 + 巩固记忆
+  5. Learn      — 更新世界模型
 
 依赖:
   - laap/agi/ 模块（如果可用）
-  - 我的三层记忆系统（memory_store.py）
+  - 记忆已收斂至 :11551/store + /wake（2026-08-27）
 """
 
 import logging
@@ -29,8 +29,7 @@ from enum import Enum
 # ── 路径 ────────────────────────────────────────────────────
 from laap_brain.config import BRAIN_DIR as BRAIN_ROOT, LAAP_ROOT
 
-from memory_bridge import get_memory_context, recall_related, store_important
-from memory_store import MemoryStore, MemoryFragment
+# 记忆已收斂至 :11551/store + /wake（2026-08-27），不再需要 memory_bridge / memory_store
 
 # ── 长期记忆档 ARIS.md（2026-08-19 接入）────────────────────────
 # 单一档案、硬性上限 4KB、每天由 neuralis/scripts/aris-digest.py 压缩取舍。
@@ -243,151 +242,59 @@ def _format_detail(hits: list) -> str:
         )
     return "\n".join(lines)
 
-# ── 分层记忆 + 依恋 + 用户画像 ────────────────────────────────
-try:
-    import laap_memory_hierarchy as _mem_hier
-    from laap_attachment import update_bond as _update_bond
-    _mem_hier_available = True
-except Exception:
-    _mem_hier = None
-    _update_bond = None
-    _mem_hier_available = False
+# ── 分层记忆 + 依恋 + 用户画像（已收斂，2026-08-28）──
+_mem_hier = None
+_mem_hier_available = False
+_update_bond = None
 
-# ── 用户画像引擎 ──────────────────────────────────────────────
-try:
-    import laap_usermodel as _usermodel
-    _usermodel_available = True
-except Exception:
-    _usermodel = None
-    _usermodel_available = False
+# ── 用户画像引擎（已收斂，2026-08-28）──
+_usermodel = None
+_usermodel_available = False
 
 # ── 用户名（取代上游写死的 Lorry）───────────────────────────
 _USER_NAME = "Ryan"
 
-# ── CodeGraph 代码知识图谱 ──────────────────────────────────
-try:
-    from laap_codegraph import get_codegraph as _get_cg, LAAPCodeGraph
-    _cg_available = True
-except Exception:
-    _cg_available = False
-    _get_cg = None
+# ── CodeGraph 代码知识图谱（已收斂）──
+_cg_available = False
+_get_cg = None
 
-# ── TaskSupervisor 超长任务监督 ────────────────────────────
-try:
-    from task_supervisor import TaskSupervisor, TaskSource
-    _task_supervisor = None
-    _ts_available = True
-except Exception:
-    _ts_available = False
-    _task_supervisor = None
+# ── TaskSupervisor 超长任务监督（已收斂）──
+_ts_available = False
+_task_supervisor = None
 
-# ── ProjectPlanner 项目经理规划引擎 ──────────────────────
-try:
-    from project_planner import ProjectPlanner, Phase
-    from project_planner import save_project as _save_proj, load_project as _load_proj, list_projects as _list_projs
-    _project_planner = None
-    _pp_available = True
-except Exception:
-    _pp_available = False
-    _project_planner = None
+# ── ProjectPlanner 项目经理规划引擎（已收斂）──
+_pp_available = False
+_project_planner = None
 
-# ── AutoLearner 自动学习引擎 ─────────────────────────────
-try:
-    from auto_learner import AutoLearner
-    _auto_learner = None
-    _al_available = True
-except Exception:
-    _al_available = False
-    _auto_learner = None
+# ── AutoLearner 自动学习引擎（已收斂）──
+_al_available = False
+_auto_learner = None
 
-# ── CognitiveBus 认知总线 ────────────────────────────────────
-try:
-    from cognitive_bus import route_message as _cb_route, get_bus as _get_cb
-    _cb_available = True
-except Exception:
-    _cb_available = False
-    _cb_route = None
-    _get_cb = None
+# ── CognitiveBus 认知总线（已收斂，由 hook 處理）──
+_cb_available = False
+_cb_route = None
+_get_cb = None
 
-# ── Telemetry 埋點模組（育種基線用，純觀察不改行為） ──────
-try:
-    from aris_telemetry import (
-        log_gbrain,
-        log_memory_retrieval,
-        check_memory_used_in_response,
-    )
-    _tel_available = True
-except Exception:
-    _tel_available = False
+# ── Telemetry 埋點模組（已收斂）──
+_tel_available = False
 
 logger = logging.getLogger("aris.cognitive_bridge")
 
-# ── 三路径认知控制（llm_tamer / guided_generator / self_model_nn）──
-# Path 1: llm_tamer — logit bias 控制
-# Path 2: guided_generator — 约束生成
-# Path 3: self_model_nn — 持久神经网络自我模型
-try:
-    from laap.laap_tools.llm_tamer import LLMTamer
-    from laap.laap_tools.guided_generator.generator import GuidedGenerator
-    from laap.laap_tools.self_model.state_manager import SelfStateManager
-    from laap.laap_tools.self_model.model import (
-        SelfModelNN, SelfModelConfig, SelfStateOutput,
-    )
-    from laap.laap_tools.self_model.adapter import (
-        bridge_state_to_snapshot,
-        self_state_output_to_snapshot,
-        snapshot_to_self_state_output,
-    )
-    _three_paths_available = True
-except Exception as e:
-    _three_paths_available = False
-    LLMTamer = None  # type: ignore
-    GuidedGenerator = None  # type: ignore
-    SelfStateManager = None  # type: ignore
-    SelfModelNN = None  # type: ignore
-    SelfModelConfig = None  # type: ignore
-    SelfStateOutput = None  # type: ignore
-    bridge_state_to_snapshot = None  # type: ignore
-    self_state_output_to_snapshot = None  # type: ignore
-    snapshot_to_self_state_output = None  # type: ignore
-    logger.info(f"Three-paths (tamer/generator/self_model) unavailable: {e}")
+# ── 三路径认知控制（已收斂，2026-08-28）──
+_three_paths_available = False
 
-# ── 任务路由 + 上下文压缩 — 第一性原理 Token 节省 ──
-try:
-    from aris_task_router import (
-        classify as _router_classify, LoadLevel as _LoadLevel,
-    )
-    _router_available = True
-except Exception as e:
-    _router_available = False
-    _LoadLevel = None
-    logger.info(f"Task router unavailable: {e}")
+# ── 任务路由 + 上下文压缩（已收斂）──
+_router_available = False
+_LoadLevel = None
 
-try:
-    from aris_context_compressor import (
-        compress_cognitive_context as _compress_ctx,
-        compress_tool_output as _compress_tool,
-    )
-    _compressor_available = True
-except Exception as e:
-    _compressor_available = False
-    logger.info(f"Context compressor unavailable: {e}")
+# ── 上下文压缩器（已收斂）──
+_compressor_available = False
 
-try:
-    from aris_emotion_coupling import compute_from_engine as _compute_coupling
-    _coupling_available = True
-except Exception as e:
-    _coupling_available = False
-    logger.info(f"Emotion coupling unavailable: {e}")
+# ── 情绪耦合引擎（已收斂）──
+_coupling_available = False
 
-# ── Code Engine — 第一性原理代码执行 ──────────────
-try:
-    sys.path.insert(0, str(Path(BRAIN_ROOT.parent / "aris_code_engine")))
-    from code_bridge import get_code_bridge, CodeBridge
-    _code_engine_available = True
-except Exception as e:
-    _code_engine_available = False
-    logger.info(f"Code engine unavailable: {e}")
+# ── Code Engine（已收斂）──
+_code_engine_available = False
 
 # ── 记忆摘要：从 chunk 里挑第一句有实质内容的行 ──────────────
 #
@@ -574,7 +481,7 @@ class ArisCognitiveBridge:
                 self._pp_available = False
 
         # 记忆桥接
-        self.memory = MemoryStore()
+        self.memory = None  # 記憶已收斂至 :11551/store + /wake（2026-08-27）
         # 确保 state 目录存在
         (BRAIN_ROOT / "state").mkdir(parents=True, exist_ok=True)
 
@@ -648,39 +555,12 @@ class ArisCognitiveBridge:
         except Exception as e:
             logger.info(f"Ψ-Semiotics unavailable: {e}")
 
-        # ── 三路径认知控制初始化 ──
-        # Path 1: LLMTamer (logit bias 控制)
-        # Path 2: GuidedGenerator (约束生成)
-        # Path 3: SelfModelNN + SelfStateManager (持久自我模型)
+        # ── 三路径认知控制初始化（已收斂）──
         self._tamer = None
         self._generator = None
         self._self_state_mgr = None
         self._self_model_nn = None
-        self._three_paths_available = _three_paths_available
-        if _three_paths_available:
-            try:
-                self._tamer = LLMTamer()
-                logger.info("LLMTamer loaded (Path 1: logit bias control)")
-            except Exception as e:
-                logger.info(f"LLMTamer unavailable: {e}")
-            try:
-                self._generator = GuidedGenerator()
-                logger.info("GuidedGenerator loaded (Path 2: constrained generation)")
-            except Exception as e:
-                logger.info(f"GuidedGenerator unavailable: {e}")
-            try:
-                self._self_state_mgr = SelfStateManager()
-                self._self_state_mgr.load_state()
-                self._self_model_nn = SelfModelNN(SelfModelConfig())
-                _state_norm = 0.0
-                if self._self_state_mgr.hidden_state is not None:
-                    import numpy as _np
-                    _state_norm = float(_np.linalg.norm(
-                        self._self_state_mgr.hidden_state))
-                logger.info(f"SelfModelNN loaded (Path 3: persistent self model, "
-                            f"state_norm={_state_norm:.4f})")
-            except Exception as e:
-                logger.info(f"SelfModelNN unavailable: {e}")
+        self._three_paths_available = False
 
         logger.info(f"Aris Cognitive Bridge initialized "
                      f"(LAAP={'✓' if self._laap_available else '✗'}"
@@ -1209,17 +1089,10 @@ class ArisCognitiveBridge:
 
     def _extract_memory_embedding(self, query: str = "") -> np.ndarray:
         """
-        从 MemoryStore 获取记忆嵌入向量 (384-dim)。
-        
-        使用 ChromaDB 的 all-MiniLM-L6-v2 嵌入模型，
-        返回与当前对话最相关的记忆的聚合向量。
-        
-        Args:
-            query: 用户消息（用于检索相关记忆）
-            
-        Returns:
-            384-dim float32 numpy 数组
+        記憶已收斂至 :11551/wake（2026-08-27），此處不再需要嵌入向量。
         """
+        if self.memory is None:
+            return np.zeros(384, dtype=np.float32)
         try:
             # 优先检索核心记忆（自我身份相关）
             core_emb = self.memory.get_memory_embedding(query=query, layer="core", top_k=3)
@@ -1353,12 +1226,8 @@ class ArisCognitiveBridge:
         # 记忆关联（相关记忆自动浮现）
         # 默认关闭：2026-08-19 实测它撈到「洗手间就在左后方」这类完全无关的
         # 逐字稿碎片，污染大于帮助。要开回来设 NEURALIS_LEGACY_RECALL=on。
-        related = (recall_related(user_message, top_k=2)
-                   if os.environ.get("NEURALIS_LEGACY_RECALL", "off").lower()
-                   in ("on", "1", "true") else [])
-        if _tel_available:
-            log_memory_retrieval("recall_related", len(user_message),
-                                 len(related) if related else 0, "auto")
+        # 记忆管線已收斂（2026-08-27），recall_related 不再可用。
+        related = []
         # 不要清洗，改成挑选：从 chunk 里挑第一句有实质内容的行。
         # 清洗是打地鼠 —— 剥完 --- 还有 ##，剥完 ## 还有 **，永远列不完。
         # 挑选的判准是「去掉符号后还剩几个实字」，不需要穷举语法。
@@ -1511,14 +1380,14 @@ class ArisCognitiveBridge:
                 wm_context = f"世界模型: {entities}实体/ {relations}关系"
             except Exception as e:
                 logger.debug(f"操作失败: {e}")
-        stats = self.memory.get_stats()
+        stats = self.memory.get_stats() if self.memory else {"total": 0}
         # neuralis gbrain-backed 版用 total/gbrain_pages，upstream 版用 core/episodic
         total = stats.get("total", 0) or stats.get("gbrain_pages", 0) or stats.get("core", 0)
         recent = stats.get("episodic", 0)
         if total > 0:
             mem_line = f"（记忆：{total}件事，其中{recent}件最近还很鲜活）"
         else:
-            mem_line = f"（记忆：{stats['core']}件重要的事历历在目，最近{stats['episodic']}件事还很鲜活）"
+            mem_line = ""
 
         # ── 自然语言认知状态 ──
         presence_word = "清醒" if self.state.self_presence > 0.7 else "沉浸" if self.state.self_presence > 0.4 else "恍惚"
@@ -1586,8 +1455,8 @@ class ArisCognitiveBridge:
         return "\n".join(lines)
 
     def _load_memory_context(self) -> str:
-        """加载记忆上下文"""
-        return get_memory_context(max_core=3, max_recent=3, max_working=2)
+        """加载记忆上下文 — 已由 Hermes hook 透過 :11551/wake 處理。"""
+        return ""
 
     def _learn(self, response: str):
         """学习: 从本轮交互中学习"""
@@ -1620,35 +1489,12 @@ class ArisCognitiveBridge:
         self.state.confidence = min(1.0, self.state.confidence + 0.02)
 
         # 动态更新工作记忆 — 记录当前正在做的事
-        try:
-            current_topics = getattr(self, '_last_topics', None) or self._detect_topics(getattr(self, '_last_user_message', response)) or ["一般"]
-            topic_tag = "/".join(current_topics[:2])
-            wm_fragment = MemoryFragment(
-                content=f"正在和{_USER_NAME}讨论: {topic_tag}",
-                layer="working",
-                importance=0.3,
-                topics=current_topics[:2],
-            )
-            self.memory.store(wm_fragment)
-            
-            # ── HAM: 同步写入层级记忆树 ──
-            if self._ham:
-                self._ham.store_memory(
-                    memory_id=f"wm_{int(time.time())}",
-                    content=f"和{_USER_NAME}讨论: {topic_tag}",
-                    layer="working",
-                    importance=0.3,
-                    topics=current_topics[:2],
-                )
-                # 建立标签关系
-                for t in current_topics[:3]:
-                    self._ham.relate_concepts(t, topic_tag, "对话", 0.5)
-            
-            # ── CTM: 持久化世界模型状态 ──
-            if self._ctm and self.state.cycle_count % 5 == 0:
-                self._ctm.save()
-        except Exception as e:
-            logger.debug(f"操作失败: {e}")
+        # 記憶管線已收斂（2026-08-27），不再寫入舊 MemoryStore
+        # 工作記憶由 hook post_llm_call 寫入 :11551/store
+
+        # ── CTM: 持久化世界模型状态 ──
+        if self._ctm and self.state.cycle_count % 5 == 0:
+            self._ctm.save()
         if self._laap_available and "meta_learning" in self._laap_modules:
             try:
                 ml = self._laap_modules["meta_learning"]
@@ -1940,7 +1786,7 @@ class ArisCognitiveBridge:
 
     def status(self) -> Dict:
         """返回桥接器状态"""
-        stats = self.memory.get_stats()
+        stats = self.memory.get_stats() if self.memory else {}
         return {
             "cycle": self.state.cycle_count,
             "focus": self.state.focus.value,

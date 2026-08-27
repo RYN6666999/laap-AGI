@@ -1,19 +1,12 @@
 """
-LAAP Memory Store — minimal fallback implementation.
+LAAP Memory Store — stub (2026-08-27 收斂).
 
-This is a lightweight in-memory + JSON-backed store used when the full
-Rust-backed memory engine is not available. It provides the same public
-interface so that aris_cognitive_bridge, laap_integrator, and other modules
-can import it without modification.
-
-In a full LAAP deployment this module may be replaced by a vector-backed
-or Rust-backed implementation.
+已由 aris-memory.py（:11551）取代所有實際記憶功能。
+此 stub 僅保留 import 相容性，不儲存、不讀取任何資料。
 """
 from __future__ import annotations
 
-import json
 import time
-import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -21,168 +14,41 @@ from typing import Any, Dict, List, Optional
 
 @dataclass
 class MemoryFragment:
-    """A single memory fragment."""
-    content: str
-    layer: str = "episodic"  # core / episodic / working
+    """Stub — 不儲存內容。"""
+    content: str = ""
+    layer: str = "episodic"
     importance: float = 0.5
     topics: List[str] = field(default_factory=list)
     timestamp: float = field(default_factory=time.time)
-    fragment_id: str = field(default_factory=lambda: f"mf_{uuid.uuid4().hex[:8]}")
+    fragment_id: str = "stub"
 
 
 class MemoryStore:
-    """Minimal fallback memory store."""
+    """Stub — 永遠空。"""
 
     def __init__(self, state_dir: Optional[Path] = None):
-        self.state_dir = state_dir or Path(__file__).resolve().parent / "state"
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        self._db_path = self.state_dir / "memory_store_fallback.json"
-
         self._fragments: List[MemoryFragment] = []
-        self._load()
-
-    def _load(self) -> None:
-        if not self._db_path.exists():
-            return
-        try:
-            data = json.loads(self._db_path.read_text(encoding="utf-8"))
-            for item in data:
-                self._fragments.append(MemoryFragment(**item))
-        except Exception:
-            pass
-
-    def _save(self) -> None:
-        try:
-            records = []
-            for f in self._fragments:
-                records.append({
-                    "content": f.content,
-                    "layer": f.layer,
-                    "importance": f.importance,
-                    "topics": f.topics,
-                    "timestamp": f.timestamp,
-                    "fragment_id": f.fragment_id,
-                })
-            from atomic_json import write_json
-            write_json(self._db_path, records)
-        except Exception:
-            pass
 
     def store(self, fragment: MemoryFragment) -> None:
-        """Store a memory fragment."""
-        self._fragments.append(fragment)
-        # Keep a bounded number of fragments per layer
-        self._prune()
-        self._save()
-
-    def _prune(self, max_total: int = 2000) -> None:
-        if len(self._fragments) <= max_total:
-            return
-        # Sort by importance desc, then timestamp desc
-        self._fragments.sort(key=lambda f: (f.importance, f.timestamp), reverse=True)
-        self._fragments = self._fragments[:max_total]
+        pass
 
     def query(self, layer: Optional[str] = None, top_k: int = 5) -> List[MemoryFragment]:
-        """Return the most recent fragments, optionally filtered by layer."""
-        candidates = self._fragments
-        if layer:
-            candidates = [f for f in candidates if f.layer == layer]
-        candidates = sorted(candidates, key=lambda f: f.timestamp, reverse=True)
-        return candidates[:top_k]
+        return []
 
     def get_stats(self) -> Dict[str, int]:
-        """Return memory statistics."""
-        return {
-            "total": len(self._fragments),
-            "core": len([f for f in self._fragments if f.layer == "core"]),
-            "episodic": len([f for f in self._fragments if f.layer == "episodic"]),
-            "working": len([f for f in self._fragments if f.layer == "working"]),
-        }
+        return {"total": 0, "core": 0, "episodic": 0, "working": 0}
 
     def get_memory_embedding(self, query: str = "", layer: str = "episodic", top_k: int = 3) -> Any:
-        """Return a simple pseudo-embedding based on keyword overlap."""
-        try:
-            import numpy as np
-            query_words = set(query.lower().split())
-            candidates = [f for f in self._fragments if f.layer == layer]
-            scores = []
-            for f in candidates:
-                frag_words = set(f.content.lower().split())
-                score = len(query_words & frag_words) / max(len(query_words), 1)
-                scores.append((score, f))
-            scores.sort(key=lambda x: x[0], reverse=True)
-            selected = [f for _, f in scores[:top_k]]
-
-            emb = np.zeros(384, dtype=np.float32)
-            if selected:
-                for f in selected:
-                    # Simple hash-based projection
-                    h = hash(f.content) % 384
-                    emb[h] += f.importance
-                norm = np.linalg.norm(emb)
-                if norm > 0:
-                    emb = emb / norm
-            return emb
-        except Exception:
-            return None
+        return None
 
 
-# ═══ 2026-08-12 移植自 neuralis overlay（live runpy 解析會載到本檔）═══
+# ── 輔助函數 stub ──────────────────────────────────────────
 
 def _query_tokens(query: str, limit: int = 8) -> str:
-    """自然問句 → gbrain 可用的關鍵字查詢（空白/標點切詞 + CJK 長詞頭尾 2 字）。"""
-    import re as _re
-    toks = [
-        t for t in _re.split(r"[\s\u3000，。！？、；：,.!?;:（）()/\\_'\"\-]+", query.lower())
-        if len(t) >= 2
-    ]
-    out = []
-    for t in toks:
-        out.append(t)
-        if len(t) > 4 and _re.search(r"[\u4e00-\u9fff]", t):
-            out.append(t[:2])
-            out.append(t[-2:])
-    return " ".join(out[:limit])
-
-
-_STOPWORDS = {
-    "告訴我", "告訴", "我們", "哪些", "什麼", "那個", "這個", "一個", "一下",
-    "最近", "有沒有", "可以", "怎麼", "為什麼", "程式裡", "叫什麼", "對話",
-    "全新", "無前文", "前文", "請", "幫我", "說說", "想知道", "做", "弄",
-    "事", "存在", "沒有", "不是", "就是",
-}
-
+    return ""
 
 def _memory_first(hits: list) -> list:
-    mem = [h for h in hits if (h.get("slug") or "").startswith("laap/memory")]
-    rest = [h for h in hits if not (h.get("slug") or "").startswith("laap/memory")]
-    return (mem + rest)[: max(len(hits), 10)]
-
+    return hits or []
 
 def hybrid_hits_any(client, query: str, limit: int) -> list:
-    """整串查 + 逐 token 查併集；停用詞過濾；laap/memory 優先（2026-08-12）。
-
-    速度優化（00:5x 實測整串查+6 token×limit15 = 21 秒太慢，LLM 兜底等不到）：
-      - 不做整串查（自然句整串命中率≈0，白燒一次）
-      - 鑑別性 token 優先（含英數的最有辨識度），最多 4 個
-      - per-token limit 縮小
-    """
-    from gbrain_client import hybrid_hits
-    toks = [t for t in _query_tokens(query).split() if t not in _STOPWORDS]
-    if not toks:
-        return []
-    toks.sort(key=lambda t: (not any(ch.isascii() and ch.isalnum() for ch in t), len(t)))
-    toks = toks[:4]
-    seen = {}
-    def _add(hs):
-        for h in hs or []:
-            sid = h.get("slug")
-            if sid and sid not in seen:
-                seen[sid] = h
-    limit_i = max(limit * 3, 10)
-    for t in toks:
-        try:
-            _add(hybrid_hits(client, t, limit_i))
-        except Exception:
-            continue
-    return _memory_first(list(seen.values()))[:limit]
+    return []
